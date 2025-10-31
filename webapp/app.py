@@ -6,7 +6,7 @@ import threading, time, json, os
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-SHARED_FILE = "/home/pi/rover/shared_data.json"
+SHARED_FILE = "/home/phil/Desktop/wro/webapp/shared_data.json"
 
 @app.route("/")
 def index():

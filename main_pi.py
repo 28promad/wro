@@ -22,7 +22,7 @@ IR_PINS = {
 # ---------------- Setup Functions ----------------
 
 
-SHARED_FILE = "/home/Desktop/wro/webapp/shared_data.json"
+SHARED_FILE = "/home/phil/Desktop/wro/webapp/shared_data.json"
 
 def update_shared_data(data):
     """Write latest readings to a JSON file for the web app."""
