@@ -1,5 +1,5 @@
 # main_pi.py
-# Raspberry Pi main controller for Databot-based rover
+# Raspberry Pi main controller using 3 HW-201 IR sensors
 
 from comms import serial_pi
 from motor_control import MotorController
@@ -9,48 +9,29 @@ import json, csv, time, os
 # ---------------- Configuration ----------------
 LOG_DIR = "/home/pi/rover_logs"
 CSV_FILE = os.path.join(LOG_DIR, "data_log.csv")
-TUNNEL_LENGTH = 10.0   # metres (set to your mine tunnel length)
-OBSTACLE_DIST = 15.0   # cm threshold for obstacle detection
+TUNNEL_LENGTH = 10.0   # metres
+OBSTACLE_DETECTED = 0  # IR sensors output LOW when blocked
 
-# Ultrasonic sensors: (trigger_pin, echo_pin)
-ULTRASONIC_PINS = {
-    "left":  (5, 6),
-    "front": (13, 19),
-    "right": (26, 21)
+# IR sensor GPIO pins
+IR_PINS = {
+    "left": 5,
+    "front": 6,
+    "right": 13
 }
 
 # ---------------- Setup Functions ----------------
-def setup_ultrasonic():
+def setup_ir():
     GPIO.setmode(GPIO.BCM)
-    for trig, echo in ULTRASONIC_PINS.values():
-        GPIO.setup(trig, GPIO.OUT)
-        GPIO.setup(echo, GPIO.IN)
-        GPIO.output(trig, False)
+    for pin in IR_PINS.values():
+        GPIO.setup(pin, GPIO.IN)
 
-def distance(trig, echo):
-    """Return distance in cm from one ultrasonic pair."""
-    GPIO.output(trig, True)
-    time.sleep(0.00001)
-    GPIO.output(trig, False)
-
-    start, end = time.time(), time.time()
-    timeout = start + 0.04  # 40 ms timeout
-    while GPIO.input(echo) == 0 and time.time() < timeout:
-        start = time.time()
-    while GPIO.input(echo) == 1 and time.time() < timeout:
-        end = time.time()
-    duration = end - start
-    return (duration * 34300) / 2
-
-def get_obstacles():
-    """Read all three ultrasonic sensors."""
-    readings = {}
-    for pos, pins in ULTRASONIC_PINS.items():
-        try:
-            readings[pos] = distance(*pins)
-        except Exception:
-            readings[pos] = 999
-    return readings
+def read_ir():
+    """Return dict with True if obstacle detected."""
+    states = {}
+    for pos, pin in IR_PINS.items():
+        val = GPIO.input(pin)
+        states[pos] = (val == OBSTACLE_DETECTED)
+    return states
 
 def log_data(data):
     """Append one line of sensor data to CSV file."""
@@ -66,12 +47,13 @@ def log_data(data):
 def main():
     print("Initializing serial link...")
     serial_pi.initialise('/dev/ttyUSB0')
-    setup_ultrasonic()
+    setup_ir()
     motor = MotorController()
     serial_pi.send_to_databot("Start")
 
     print("Waiting for Databot...")
     reverse = False
+
     while True:
         msg = serial_pi.read_from_databot()
         if not msg:
@@ -84,25 +66,28 @@ def main():
             print("Parse error:", msg)
             continue
 
-        log_data(data)  # save everything
+        log_data(data)
         disp = float(data.get("disp", 0))
-        obstacles = get_obstacles()
-        left, front, right = obstacles["left"], obstacles["front"], obstacles["right"]
+        ir = read_ir()
+        left, front, right = ir["left"], ir["front"], ir["right"]
 
-        print(f"disp={disp:.2f} m | front={front:.1f} cm | L={left:.1f} cm | R={right:.1f} cm")
+        print(f"disp={disp:.2f} m | IR -> L:{left} F:{front} R:{right}")
 
         # --- Obstacle avoidance ---
-        if all(d < OBSTACLE_DIST for d in obstacles.values()):
+        if left and front and right:
             print("All sides blocked → turning around")
             motor.turn_around()
             reverse = not reverse
 
-        elif front < OBSTACLE_DIST:
-            if left > right:
+        elif front:
+            if not left and right:
                 print("Obstacle ahead → turning left")
                 motor.turn_left()
-            else:
+            elif not right and left:
                 print("Obstacle ahead → turning right")
+                motor.turn_right()
+            else:
+                print("Front blocked → turning right by default")
                 motor.turn_right()
         else:
             motor.forward()
