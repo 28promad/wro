@@ -33,17 +33,22 @@ def wait_for_connection():
     lights.set_all(255, 0, 0)
     print("Waiting for Raspberry Pi...")
     while True:
-        msg = serial_databot.read_from_pi()
-        if msg == "Start":
-            for _ in range(3):
-                lights.set_all(0, 255, 0)
-                time.sleep(0.3)
-                lights.off()
-                time.sleep(0.3)
-            lights.set_all(0, 255, 0)
-            serial_databot.send_to_pi("ready")
-            print("Connected to Pi!")
-            break
+        try:
+            msg = serial_databot.read_from_pi()
+            if msg:
+                print("Received:", msg)  # Debug print
+                if "start" in msg.lower():  # Case-insensitive comparison
+                    for _ in range(3):
+                        lights.set_all(0, 255, 0)
+                        time.sleep(0.3)
+                        lights.off()
+                        time.sleep(0.3)
+                    lights.set_all(0, 255, 0)
+                    serial_databot.send_to_pi("ready")
+                    print("Connected to Pi!")
+                    break
+        except Exception as e:
+            print("Error in wait_for_connection:", e)
         time.sleep(0.1)
 
 def read_environment():

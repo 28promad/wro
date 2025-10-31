@@ -70,19 +70,26 @@ def main():
     if not serial_pi.initialise('/dev/ttyUSB0'):
         raise RuntimeError("Failed to initialize serial connection")
     
-    print("Setting up hardware...")
     setup_ir()
     motor = MotorController()
     
-    print("Sending start signal to Databot...")
+    print("Sending start signal...")
     serial_pi.send_to_databot("Start")
     
-    # Wait briefly for Databot to initialize
-    time.sleep(15)
-    
+    # Wait for ready response from Databot
+    print("Waiting for Databot ready signal...")
+    timeout = time.time() + 10  # 10 second timeout
+    while time.time() < timeout:
+        msg = serial_pi.read_from_databot()
+        if msg and "ready" in msg:
+            print("Databot ready!")
+            break
+        time.sleep(0.1)
+    else:
+        raise RuntimeError("Databot did not respond within 10 seconds")
+        
     # Initialize navigation state
     reverse = False
-    print("Ready to receive data...")
 
     while True:
         msg = serial_pi.read_from_databot()
