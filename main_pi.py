@@ -78,7 +78,7 @@ def main():
     
     # Wait for ready response from Databot
     print("Waiting for Databot ready signal...")
-    timeout = time.time() + 10  # 10 second timeout
+    timeout = time.time() + 60  # 60 second timeout
     while time.time() < timeout:
         msg = serial_pi.read_from_databot()
         if msg and "ready" in msg:
