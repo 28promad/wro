@@ -1,6 +1,7 @@
 # main_pi.py
 # Raspberry Pi main controller using 3 HW-201 IR sensors
 
+import shutil, tempfile
 from comms import serial_pi
 from motor_control import MotorController
 import RPi.GPIO as GPIO
@@ -25,14 +26,18 @@ IR_PINS = {
 SHARED_FILE = "/home/phil/Desktop/wro/webapp/shared_data.json"
 
 def update_shared_data(data):
-    """Write latest readings to a JSON file for the web app."""
+    """Safely write latest readings to a JSON file for the web app."""
     try:
         os.makedirs(os.path.dirname(SHARED_FILE), exist_ok=True)
-        with open(SHARED_FILE, "w") as f:
-            json.dump(data, f)
+
+        # Write to a temp file first, then atomically replace the old one
+        with tempfile.NamedTemporaryFile("w", delete=False, dir=os.path.dirname(SHARED_FILE)) as tmp:
+            json.dump(data, tmp)
+            tempname = tmp.name
+
+        shutil.move(tempname, SHARED_FILE)
     except Exception as e:
         print("Shared data write error:", e)
-
 
 
 

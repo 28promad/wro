@@ -25,15 +25,20 @@ def data_emitter():
     last_data = None
     while True:
         try:
-            if os.path.exists(SHARED_FILE):
+            if os.path.exists(SHARED_FILE) and os.path.getsize(SHARED_FILE) > 0:
                 with open(SHARED_FILE) as f:
-                    data = json.load(f)
+                    try:
+                        data = json.load(f)
+                    except json.JSONDecodeError:
+                        time.sleep(0.2)
+                        continue  # skip invalid or empty read
                 if data != last_data:
                     socketio.emit("update", data)
                     last_data = data
         except Exception as e:
             print("Emitter error:", e)
         time.sleep(1)
+
 
 if __name__ == "__main__":
     threading.Thread(target=data_emitter, daemon=True).start()
