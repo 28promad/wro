@@ -1,12 +1,3 @@
-# python
-from machine import Pin
-import neopixel
-from time import sleep
-
-np = neopixel.NeoPixel(Pin(2), 3)
-
-while True:
-    for brightness in range(0, 256, 10):
-        np.fill((30, 12, 3))
-        np.write()
-        sleep(0.05)
+from machine import I2C, Pin
+i2c = I2C(0, scl=Pin(22), sda=Pin(21))
+print("I2C scan:", [hex(x) for x in i2c.scan()])
