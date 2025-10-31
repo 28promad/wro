@@ -73,21 +73,8 @@ def main():
     setup_ir()
     motor = MotorController()
     
-    print("Sending start signal...")
-    serial_pi.send_to_databot("Start")
+    print("Serial connection established - starting navigation...")
     
-    # Wait for ready response from Databot
-    # print("Waiting for Databot ready signal...")
-    # timeout = time.time() + 60  # 60 second timeout
-    # while time.time() < timeout:
-    #     msg = serial_pi.read_from_databot()
-    #     if msg and "ready" in msg:
-    #         print("Databot ready!")
-    #         break
-    #     time.sleep(0.1)
-    # else:
-    #     raise RuntimeError("Databot did not respond within 10 seconds")
-        
     # Initialize navigation state
     reverse = False
 
