@@ -3,7 +3,7 @@
 
 import shutil, tempfile
 from comms import serial_pi
-from motor_control import MotorController
+from motor_controller import MotorController
 import RPi.GPIO as GPIO
 import json, csv, time, os
 
