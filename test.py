@@ -1,6 +1,6 @@
 # test_imu.py
 from machine import I2C, Pin
-from imu_icm20948 import ICM20948
+from databot.imu_icm20948 import ICM20948
 import time
 
 i2c = I2C(0, scl=Pin(22), sda=Pin(21))

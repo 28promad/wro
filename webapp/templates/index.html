@@ -1,0 +1,30 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Rover Live Dashboard</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+<body>
+  <h1>Rover Live Data</h1>
+  <div class="grid">
+    <div class="card"><h3>CO₂</h3><p id="co2">--</p></div>
+    <div class="card"><h3>VOC</h3><p id="voc">--</p></div>
+    <div class="card"><h3>Temp (°C)</h3><p id="temp">--</p></div>
+    <div class="card"><h3>Humidity (%)</h3><p id="hum">--</p></div>
+    <div class="card"><h3>Displacement (m)</h3><p id="disp">--</p></div>
+  </div>
+
+  <script>
+    const socket = io();
+    socket.on("update", data => {
+      for (const key in data) {
+        const el = document.getElementById(key);
+        if (el) el.textContent = data[key].toFixed ? data[key].toFixed(2) : data[key];
+      }
+    });
+  </script>
+</body>
+</html>

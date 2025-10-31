@@ -20,6 +20,22 @@ IR_PINS = {
 }
 
 # ---------------- Setup Functions ----------------
+
+
+SHARED_FILE = "/home/Desktop/wro/webapp/shared_data.json"
+
+def update_shared_data(data):
+    """Write latest readings to a JSON file for the web app."""
+    try:
+        os.makedirs(os.path.dirname(SHARED_FILE), exist_ok=True)
+        with open(SHARED_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print("Shared data write error:", e)
+
+
+
+
 def setup_ir():
     GPIO.setmode(GPIO.BCM)
     for pin in IR_PINS.values():
@@ -67,6 +83,7 @@ def main():
             continue
 
         log_data(data)
+        update_shared_data(data)
         disp = float(data.get("disp", 0))
         ir = read_ir()
         left, front, right = ir["left"], ir["front"], ir["right"]
