@@ -1,9 +1,11 @@
 # main_databot.py
 from databoot import Lights, Buzzer, AirQualitySensor, Humidity
-from comms import serial_databot
+import serial_databot
 from machine import I2C, Pin
 from imu_icm20948 import ICM20948
 import time, ujson
+from math import sqrt
+
 
 # --- Hardware setup ---
 lights = Lights(num_leds=3, pin=2)
