@@ -13,7 +13,12 @@ def read_from_databot():
     return None
 
 # Example while loop
+
+
+
+
 while True:
+    # send_to_databot("Start")
     if ser.in_waiting:
         line = ser.readline().decode().strip()
         print(line)
