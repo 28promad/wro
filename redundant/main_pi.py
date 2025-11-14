@@ -2,7 +2,7 @@ import RPi.GPIO as GPIO
 from comms import serial_pi
 from time import sleep, time
 import json
-from movement.motor_controller import MotorController
+from motor_control import MotorController
 
 # Motor configuration
 RIGHT_MOTOR = (17, 27, 4)  # IN1, IN2, EN_A
