@@ -2,7 +2,7 @@
 # rover_simulation_improved.py
 
 import pygame
-import random
+import randomw
 import math
 
 # --- Constants ---
