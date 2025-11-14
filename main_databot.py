@@ -1,6 +1,6 @@
 # main_databot.py
 from databoot import Lights, Buzzer, AirQualitySensor, Humidity
-import serial_databot
+from ble_databot import BLE_UART
 from machine import I2C, Pin
 from imu_icm20948 import ICM20948
 import time, ujson
@@ -33,8 +33,18 @@ def wait_for_connection():
     """Wait for 'Start' command from the Raspberry Pi."""
     lights.set_all(255, 0, 0)
     print("Waiting for Raspberry Pi...")
-    while True:
-        msg = serial_databot.read_from_pi()
+    # Use BLE_UART peripheral to receive the Start command
+    ble = BLE_UART(name="databot-uart")
+
+    started = False
+
+    def on_receive(data):
+        nonlocal started
+        try:
+            msg = data.decode('utf-8')
+        except Exception:
+            msg = repr(data)
+
         if msg == "Start":
             for _ in range(3):
                 lights.set_all(0, 255, 0)
@@ -42,10 +52,19 @@ def wait_for_connection():
                 lights.off()
                 time.sleep(0.3)
             lights.set_all(0, 255, 0)
-            serial_databot.send_to_pi("ready")
-            print("Connected to Pi!")
-            break
+            ble.send("ready")
+            print("Connected to Pi via BLE!")
+            started = True
+
+    ble.on_receive(on_receive)
+    ble.start_advertising()
+
+    # Block until Start received
+    while not started:
         time.sleep(0.1)
+
+    # Return BLE object so main loop can use it
+    return ble
 
 def read_environment():
     co2 = air.read_co2() or 0
@@ -89,7 +108,7 @@ def status_feedback(co2, voc, temp, hum):
     else:
         lights.set_one(2, 0, 255, 0)
 
-def send_data():
+def send_data(ble=None):
     """Gather all sensor readings and send as JSON string."""
     co2, voc, temp, hum = read_environment()
     ax, ay, az, gx, gy, gz = read_imu()
@@ -102,24 +121,29 @@ def send_data():
         "disp": disp
     }
 
-    serial_databot.send_to_pi(ujson.dumps(data))
+    payload = ujson.dumps(data)
+    if ble:
+        ble.send(payload)
+    else:
+        # Fallback: print (or you can buffer locally)
+        print("Data:", payload)
     status_feedback(co2, voc, temp, hum)
 
 # ----------------------  Main loop  ----------------------
 def main():
-    wait_for_connection()
+    ble = wait_for_connection()
     last_send = time.ticks_ms()
 
-    while True:
-        msg = serial_databot.read_from_pi()
-        if msg and msg.lower() == "stop":
-            lights.off()
-            break
+    try:
+        while True:
+            # Check for 'stop' command (would be handled in on_receive if needed)
+            if time.ticks_diff(time.ticks_ms(), last_send) > 1000:
+                send_data(ble=ble)
+                last_send = time.ticks_ms()
+            time.sleep(0.05)
+    except KeyboardInterrupt:
+        lights.off()
 
-        if time.ticks_diff(time.ticks_ms(), last_send) > 1000:
-            send_data()
-            last_send = time.ticks_ms()
-        time.sleep(0.05)
 
 if __name__ == "__main__":
     main()

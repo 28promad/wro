@@ -1,10 +1,10 @@
-# main_pi.py
-# Raspberry Pi main controller for Databot-based rover
+ # main_pi.py
+# Raspberry Pi main controller for Databot-based rover (BLE version)
 
-from comms import serial_pi
 from motor_control import MotorController
 import RPi.GPIO as GPIO
-import json, csv, time, os
+import json, csv, time, os, asyncio
+from comms.central import BLE_UART_Central, connection_manager
 
 # ---------------- Configuration ----------------
 LOG_DIR = "/home/pi/rover_logs"
@@ -91,9 +91,8 @@ def handle_obstacle_avoidance(motor, readings):
         return True
     
     return False
-        except Exception:
-            readings[pos] = 999
-    return readings
+
+    
 
 def log_data(data):
     """Append one line of sensor data to CSV file."""
@@ -107,115 +106,80 @@ def log_data(data):
 def main():
     """Main control loop for the rover."""
     motor = None
-    try:
-        # Initialize components
+
+    async def async_main():
+        central = BLE_UART_Central()
+        data_queue = asyncio.Queue()
+
+        def handle_databot_rx(raw):
+            try:
+                text = raw.decode('utf-8')
+            except Exception:
+                text = repr(raw)
+            # Push JSON messages to queue for processing
+            try:
+                data = json.loads(text)
+            except Exception:
+                return
+            asyncio.get_event_loop().call_soon_threadsafe(data_queue.put_nowait, data)
+
+        central.on_receive(handle_databot_rx)
+
+        print("Rover initializing (BLE)...")
         setup_ultrasonic()
         motor = MotorController()
-        serial_pi.initialise('/dev/ttyUSB0')
-        print("Rover initialized successfully")
-        
-        while True:
-            # Get sensor readings
-            obstacle_readings = get_obstacles()
-            
-            # Check for obstacles and handle avoidance
-            if handle_obstacle_avoidance(motor, obstacle_readings):
-                continue  # Skip to next iteration if we had to avoid an obstacle
-            
-            # If no obstacles, continue forward
-            motor.forward()
-            
-            # Get sensor data from Databot
-            msg = serial_pi.read_from_databot()
-            if msg:
-                try:
-                    data = json.loads(msg)
-                    log_data(data)
-                except json.JSONDecodeError as e:
-                    print(f"Error decoding data: {e}")
-            
-            time.sleep(0.05)  # Small delay to prevent CPU overload
-            
-    except KeyboardInterrupt:
-        print("\nShutting down...")
-    finally:
-        if motor:
-            motor.stop()
-        GPIO.cleanup()
-        
-if __name__ == "__main__":
-    main()
-    write_header = not os.path.exists(CSV_FILE)
-    with open(CSV_FILE, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=data.keys())
-        if write_header:
-            writer.writeheader()
-        writer.writerow(data)
 
-# ---------------- Navigation Logic ----------------
-def main():
-    print("Initializing serial link...")
-    serial_pi.initialise('/dev/ttyUSB0')
-    setup_ultrasonic()
-    motor = MotorController()
-    serial_pi.send_to_databot("Start")
+        # Start background connection manager (auto-reconnect loop)
+        asyncio.create_task(connection_manager(central))
 
-    print("Waiting for Databot...")
-    reverse = False
-    while True:
-        msg = serial_pi.read_from_databot()
-        if not msg:
-            time.sleep(0.05)
-            continue
+        # Attempt to send start command once connected
+        async def ensure_connected_and_start():
+            while not central.is_connected:
+                await asyncio.sleep(0.5)
+            await central.send("Start")
+
+        asyncio.create_task(ensure_connected_and_start())
 
         try:
-            data = json.loads(msg)
-        except Exception:
-            print("Parse error:", msg)
-            continue
+            while True:
+                # Read sensors in threads to avoid blocking event loop
+                left = await asyncio.to_thread(distance, *ULTRASONIC_PINS['left'])
+                front = await asyncio.to_thread(distance, *ULTRASONIC_PINS['front'])
+                right = await asyncio.to_thread(distance, *ULTRASONIC_PINS['right'])
+                readings = {"left": left, "front": front, "right": right}
 
-        log_data(data)  # save everything
-        disp = float(data.get("disp", 0))
-        obstacles = get_obstacles()
-        left, front, right = obstacles["left"], obstacles["front"], obstacles["right"]
+                # Obstacle handling (synchronous motor calls are fine)
+                if handle_obstacle_avoidance(motor, readings):
+                    await asyncio.sleep(0.05)
+                    continue
 
-        print(f"disp={disp:.2f} m | front={front:.1f} cm | L={left:.1f} cm | R={right:.1f} cm")
+                motor.forward()
 
-        # --- Obstacle avoidance ---
-        if all(d < OBSTACLE_DIST for d in obstacles.values()):
-            print("All sides blocked → turning around")
-            motor.turn_around()
-            reverse = not reverse
+                # Process incoming databot messages if any
+                try:
+                    data = data_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    data = None
 
-        elif front < OBSTACLE_DIST:
-            if left > right:
-                print("Obstacle ahead → turning left")
-                motor.turn_left()
-            else:
-                print("Obstacle ahead → turning right")
-                motor.turn_right()
-        else:
-            motor.forward()
+                if data:
+                    log_data(data)
 
-        # --- Tunnel-end and return logic ---
-        if not reverse and disp >= TUNNEL_LENGTH:
-            print("Reached tunnel end → turning around")
-            motor.turn_around()
-            reverse = True
-        elif reverse and abs(disp) <= 0.2:
-            print("Returned to origin → stopping rover")
-            motor.stop()
-            break
+                await asyncio.sleep(0.05)
 
-        time.sleep(0.1)
+        except asyncio.CancelledError:
+            print("Shutting down async main")
+        except KeyboardInterrupt:
+            print("\nShutting down...")
+        finally:
+            if motor:
+                motor.stop()
+            GPIO.cleanup()
 
-# ---------------- Entry Point ----------------
-if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        GPIO.cleanup()
-        print("\nStopped manually.")
-    except Exception as e:
-        GPIO.cleanup()
-        print("Error:", e)
+    if __name__ == "__main__":
+        try:
+            asyncio.run(async_main())
+        except KeyboardInterrupt:
+            GPIO.cleanup()
+            print("\nStopped manually.")
+
+# Entry point is handled above by the async_main implementation.
