@@ -17,7 +17,7 @@ async def run(duration: float):
             text = repr(data)
 
         # Announce the message
-        print(f"From{text}")
+        print(f"RECEIVED:{text}")
 
         # If we see 'ready', set the event
         if isinstance(text, str) and text.strip().lower() == 'ready':
