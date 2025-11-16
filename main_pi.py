@@ -205,12 +205,12 @@ def main():
                 motor.stop()
             GPIO.cleanup()
 
-    if __name__ == "__main__":
-        try:
-            asyncio.run(async_main())
-        except KeyboardInterrupt:
-            service.set_connected(False)
-            GPIO.cleanup()
-            print("\nStopped manually.")
+    try:
+        asyncio.run(async_main())
+    except KeyboardInterrupt:
+        service.set_connected(False)
+        GPIO.cleanup()
+        print("\nStopped manually.")
 
-# Entry point is handled above by the async_main implementation.
+if __name__ == "__main__":
+    main()
