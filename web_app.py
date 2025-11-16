@@ -64,7 +64,6 @@ def get_status():
 @socketio.on('connect')
 def handle_connect():
     """Handle new client connection."""
-    from flask_socketio import request
     print(f"Client connected: {request.sid}")
     connected_clients.add(request.sid)
     
@@ -76,7 +75,6 @@ def handle_connect():
 @socketio.on('disconnect')
 def handle_disconnect():
     """Handle client disconnection."""
-    from flask_socketio import request
     print(f"Client disconnected: {request.sid}")
     connected_clients.discard(request.sid)
 
