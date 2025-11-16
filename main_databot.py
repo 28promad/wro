@@ -41,7 +41,7 @@ prev_time = time.ticks_ms() # Used for integration time step (dt)
 # ----------------------  Helper functions  ----------------------
 def wait_for_connection():
     """Wait for 'Start' command from the Raspberry Pi."""
-    lights.set_all(255, 0, 0)
+    lights.set_all(255, 240, 224)
     print("Waiting for Raspberry Pi...")
     ble = BLE_UART(name="databot-uart")
     started = False

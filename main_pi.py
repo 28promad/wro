@@ -8,8 +8,8 @@ import json, csv, time, os, asyncio
 from comms.central import BLE_UART_Central, connection_manager
 
 # ---------------- Configuration ----------------
-# Use /home/pi/rover_logs on production Pi, fall back to local directory
-LOG_DIR = "/home/pi/rover_logs" if os.path.exists("/home/pi") else "./rover_logs"
+# Use /home/phil/rover_logs on production Pi, fall back to local directory
+LOG_DIR = "/home/phil/rover_logs" if os.path.exists("/home/phil") else "./rover_logs"
 CSV_FILE = os.path.join(LOG_DIR, "data_log.csv")
 TUNNEL_LENGTH = 10.0   # metres (set to your mine tunnel length)
 OBSTACLE_DIST = 15.0   # cm threshold for obstacle detection
