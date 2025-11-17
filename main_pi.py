@@ -2,14 +2,12 @@
 # Raspberry Pi main controller for Databot-based rover (BLE version)
 
 from motor_control import MotorController
-from rover_data_service import get_service
 import RPi.GPIO as GPIO
 import json, csv, time, os, asyncio
 from comms.central import BLE_UART_Central, connection_manager
 
 # ---------------- Configuration ----------------
-# Use /home/phil/rover_logs on production Pi, fall back to local directory
-LOG_DIR = "/home/phil/rover_logs" if os.path.exists("/home/phil") else "./rover_logs"
+LOG_DIR = "/home/rover_logs"
 CSV_FILE = os.path.join(LOG_DIR, "data_log.csv")
 TUNNEL_LENGTH = 10.0   # metres (set to your mine tunnel length)
 OBSTACLE_DIST = 15.0   # cm threshold for obstacle detection
@@ -97,16 +95,7 @@ def handle_obstacle_avoidance(motor, readings):
     
 
 def log_data(data):
-    """
-    Update shared data service for real-time dashboard.
-    Also append to CSV file for historical logging.
-    """
-    service = get_service()
-    
-    # Update the real-time service (fast, in-memory)
-    service.update(data)
-    
-    # Also log to CSV periodically (optional, for AI training data)
+    """Append one line of sensor data to CSV file."""
     os.makedirs(LOG_DIR, exist_ok=True)
     with open(CSV_FILE, 'a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=list(data.keys()))
@@ -117,10 +106,8 @@ def log_data(data):
 def main():
     """Main control loop for the rover."""
     motor = None
-    service = get_service()
 
     async def async_main():
-        nonlocal motor
         central = BLE_UART_Central()
         data_queue = asyncio.Queue()
 
@@ -150,24 +137,11 @@ def main():
             while not central.is_connected:
                 await asyncio.sleep(0.5)
             await central.send("Start")
-            service.set_connected(True)
-            print("Connected to Databot!")
 
         asyncio.create_task(ensure_connected_and_start())
 
         try:
-            last_connection_check = time.time()
-            
             while True:
-                # Check connection status every 2 seconds
-                now = time.time()
-                if now - last_connection_check > 2.0:
-                    if central.is_connected:
-                        service.set_connected(True)
-                    else:
-                        service.set_connected(False)
-                    last_connection_check = now
-
                 # Read sensors in threads to avoid blocking event loop
                 left = await asyncio.to_thread(distance, *ULTRASONIC_PINS['left'])
                 front = await asyncio.to_thread(distance, *ULTRASONIC_PINS['front'])
@@ -189,10 +163,6 @@ def main():
 
                 if data:
                     log_data(data)
-                else:
-                    # Even if not connected, update the service to show rover is running
-                    # This keeps the dashboard responsive
-                    service.set_connected(central.is_connected)
 
                 await asyncio.sleep(0.05)
 
@@ -201,17 +171,15 @@ def main():
         except KeyboardInterrupt:
             print("\nShutting down...")
         finally:
-            service.set_connected(False)
             if motor:
                 motor.stop()
             GPIO.cleanup()
 
-    try:
-        asyncio.run(async_main())
-    except KeyboardInterrupt:
-        service.set_connected(False)
-        GPIO.cleanup()
-        print("\nStopped manually.")
+    if __name__ == "__main__":
+        try:
+            asyncio.run(async_main())
+        except KeyboardInterrupt:
+            GPIO.cleanup()
+            print("\nStopped manually.")
 
-if __name__ == "__main__":
-    main()
+# Entry point is handled above by the async_main implementation.
