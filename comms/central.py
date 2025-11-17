@@ -40,20 +40,9 @@ class BLE_UART_Central:
         try:
             self.client = BleakClient(device)
             await self.client.connect()
-            print("Connected successfully! Performing service discovery...")
-            # Ensure service discovery has completed on all backends
-            try:
-                # Some backends require an explicit services fetch
-                await self.client.get_services()
-            except Exception:
-                # Non-fatal: continue and rely on client.services fallback
-                pass
-
-            uart_service = None
-            try:
-                uart_service = self.client.services.get_service(UART_SERVICE_UUID)
-            except Exception as e:
-                print(f"Warning: could not query services immediately: {e}")
+            print("Connected successfully!")
+            
+            uart_service = self.client.services.get_service(UART_SERVICE_UUID)
             if not uart_service:
                 print(f"UART Service {UART_SERVICE_UUID} not found!")
                 await self.client.disconnect()
@@ -107,16 +96,6 @@ class BLE_UART_Central:
             data = str(data).encode('utf-8')
             
         try:
-            # Some backends will raise if service discovery hasn't completed yet.
-            # Ensure services are available before writing.
-            if not getattr(self.client, 'services', None):
-                try:
-                    await self.client.get_services()
-                except Exception:
-                    # If we still can't fetch services, avoid writing and surface a clear message
-                    print("Error: service discovery not completed, skipping write")
-                    return False
-
             # 'response=False' is "Write Without Response", which is standard for UART
             await self.client.write_gatt_char(self.rx_char, data, response=False)
             return True
