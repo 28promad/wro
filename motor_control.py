@@ -1,120 +1,156 @@
 # motor_control.py
+# Motor controller for the rover with movement state tracking
 
 import RPi.GPIO as GPIO
 import time
 
-# --- Pin configuration ---
-
-MOTOR_LEFT_FORWARD = 17
-MOTOR_LEFT_BACKWARD = 27
-MOTOR_RIGHT_FORWARD = 23
-MOTOR_RIGHT_BACKWARD = 24
-ENABLE_LEFT = 22
-ENABLE_RIGHT = 25
-
-# --- Movement constants ---
-MOTOR_SPEED = 75        # PWM duty cycle (0–100%)
-TURN_TIME = 0.6         # seconds to complete a 90° turn
-TURN_AROUND_TIME = 1.2  # seconds for 180° turn
-STOP_DELAY = 0.1        # small delay for safety stop
-
 class MotorController:
-    def __init__(self):
+    """Controls the rover's motors with L298N motor driver."""
+    
+    def __init__(self, left_pins=(7, 8, 25), right_pins=(9, 10, 11), default_speed=75):
+        """
+        Initialize motor controller.
+        
+        Args:
+            left_pins: (enable, in1, in2) for left motor
+            right_pins: (enable, in1, in2) for right motor
+            default_speed: PWM duty cycle (0-100)
+        """
+        # Pin assignments
+        self.left_enable, self.left_in1, self.left_in2 = left_pins
+        self.right_enable, self.right_in1, self.right_in2 = right_pins
+        
+        self.default_speed = default_speed
+        self._current_speed = default_speed
+        self._is_moving = False
+        self._movement_start_time = 0
+        
+        # Setup GPIO
         GPIO.setmode(GPIO.BCM)
-        GPIO.setup([MOTOR_LEFT_FORWARD, MOTOR_LEFT_BACKWARD,
-                    MOTOR_RIGHT_FORWARD, MOTOR_RIGHT_BACKWARD,
-                    ENABLE_LEFT, ENABLE_RIGHT], GPIO.OUT)
-
-        self.pwm_left = GPIO.PWM(ENABLE_LEFT, 1000)
-        self.pwm_right = GPIO.PWM(ENABLE_RIGHT, 1000)
-        self.pwm_left.start(MOTOR_SPEED)
-        self.pwm_right.start(MOTOR_SPEED)
-        self.stop()
-
-    # ------------------------
-    #  Basic motor controls
-    # ------------------------
+        GPIO.setwarnings(False)
+        
+        # Setup pins
+        for pin in [self.left_in1, self.left_in2, self.right_in1, self.right_in2]:
+            GPIO.setup(pin, GPIO.OUT)
+            GPIO.output(pin, False)
+        
+        # Setup PWM for speed control
+        GPIO.setup(self.left_enable, GPIO.OUT)
+        GPIO.setup(self.right_enable, GPIO.OUT)
+        
+        self.left_pwm = GPIO.PWM(self.left_enable, 1000)  # 1kHz frequency
+        self.right_pwm = GPIO.PWM(self.right_enable, 1000)
+        
+        self.left_pwm.start(0)
+        self.right_pwm.start(0)
+        
+        print("✓ Motor controller initialized")
+    
     def set_speed(self, speed):
-        """Change speed dynamically (0–100)."""
-        global MOTOR_SPEED
-        MOTOR_SPEED = max(0, min(speed, 100))
-        self.pwm_left.ChangeDutyCycle(MOTOR_SPEED)
-        self.pwm_right.ChangeDutyCycle(MOTOR_SPEED)
-        print(f"Speed set to {MOTOR_SPEED}%")
-
+        """Set motor speed (0-100)."""
+        self._current_speed = max(0, min(100, speed))
+        if self._is_moving:
+            self.left_pwm.ChangeDutyCycle(self._current_speed)
+            self.right_pwm.ChangeDutyCycle(self._current_speed)
+    
     def forward(self, duration=None):
-        GPIO.output(MOTOR_LEFT_FORWARD, True)
-        GPIO.output(MOTOR_LEFT_BACKWARD, False)
-        GPIO.output(MOTOR_RIGHT_FORWARD, True)
-        GPIO.output(MOTOR_RIGHT_BACKWARD, False)
-        print("Moving forward")
+        """Move forward. If duration specified, move for that many seconds."""
+        self._is_moving = True
+        self._movement_start_time = time.time()
+        
+        # Left motor forward
+        GPIO.output(self.left_in1, True)
+        GPIO.output(self.left_in2, False)
+        
+        # Right motor forward
+        GPIO.output(self.right_in1, True)
+        GPIO.output(self.right_in2, False)
+        
+        self.left_pwm.ChangeDutyCycle(self._current_speed)
+        self.right_pwm.ChangeDutyCycle(self._current_speed)
+        
         if duration:
             time.sleep(duration)
             self.stop()
-
+    
     def backward(self, duration=None):
-        GPIO.output(MOTOR_LEFT_FORWARD, False)
-        GPIO.output(MOTOR_LEFT_BACKWARD, True)
-        GPIO.output(MOTOR_RIGHT_FORWARD, False)
-        GPIO.output(MOTOR_RIGHT_BACKWARD, True)
-        print("Reversing")
+        """Move backward. If duration specified, move for that many seconds."""
+        self._is_moving = True
+        self._movement_start_time = time.time()
+        
+        # Left motor backward
+        GPIO.output(self.left_in1, False)
+        GPIO.output(self.left_in2, True)
+        
+        # Right motor backward
+        GPIO.output(self.right_in1, False)
+        GPIO.output(self.right_in2, True)
+        
+        self.left_pwm.ChangeDutyCycle(self._current_speed)
+        self.right_pwm.ChangeDutyCycle(self._current_speed)
+        
         if duration:
             time.sleep(duration)
             self.stop()
-
-    def turn_left(self, duration=TURN_TIME):
-        GPIO.output(MOTOR_LEFT_FORWARD, False)
-        GPIO.output(MOTOR_LEFT_BACKWARD, True)
-        GPIO.output(MOTOR_RIGHT_FORWARD, True)
-        GPIO.output(MOTOR_RIGHT_BACKWARD, False)
-        print("Turning left")
+    
+    def turn_left(self, duration=0.5):
+        """Turn left for specified duration."""
+        self._is_moving = False  # Turning doesn't count as forward movement
+        
+        # Left motor backward
+        GPIO.output(self.left_in1, False)
+        GPIO.output(self.left_in2, True)
+        
+        # Right motor forward
+        GPIO.output(self.right_in1, True)
+        GPIO.output(self.right_in2, False)
+        
+        self.left_pwm.ChangeDutyCycle(self._current_speed)
+        self.right_pwm.ChangeDutyCycle(self._current_speed)
+        
         time.sleep(duration)
         self.stop()
-
-    def turn_right(self, duration=TURN_TIME):
-        GPIO.output(MOTOR_LEFT_FORWARD, True)
-        GPIO.output(MOTOR_LEFT_BACKWARD, False)
-        GPIO.output(MOTOR_RIGHT_FORWARD, False)
-        GPIO.output(MOTOR_RIGHT_BACKWARD, True)
-        print("Turning right")
+    
+    def turn_right(self, duration=0.5):
+        """Turn right for specified duration."""
+        self._is_moving = False
+        
+        # Left motor forward
+        GPIO.output(self.left_in1, True)
+        GPIO.output(self.left_in2, False)
+        
+        # Right motor backward
+        GPIO.output(self.right_in1, False)
+        GPIO.output(self.right_in2, True)
+        
+        self.left_pwm.ChangeDutyCycle(self._current_speed)
+        self.right_pwm.ChangeDutyCycle(self._current_speed)
+        
         time.sleep(duration)
         self.stop()
-
-    def turn_around(self):
-        print("Turning around (180°)")
-        self.turn_left(duration=TURN_AROUND_TIME)
-        self.stop()
-
+    
     def stop(self):
-        GPIO.output(MOTOR_LEFT_FORWARD, False)
-        GPIO.output(MOTOR_LEFT_BACKWARD, False)
-        GPIO.output(MOTOR_RIGHT_FORWARD, False)
-        GPIO.output(MOTOR_RIGHT_BACKWARD, False)
-        time.sleep(STOP_DELAY)
-        print("Motors stopped")
-
+        """Stop all motors."""
+        self._is_moving = False
+        
+        GPIO.output(self.left_in1, False)
+        GPIO.output(self.left_in2, False)
+        GPIO.output(self.right_in1, False)
+        GPIO.output(self.right_in2, False)
+        
+        self.left_pwm.ChangeDutyCycle(0)
+        self.right_pwm.ChangeDutyCycle(0)
+    
     def cleanup(self):
-        """Stop PWM and clean GPIO."""
+        """Cleanup GPIO and stop motors."""
         self.stop()
-        self.pwm_left.stop()
-        self.pwm_right.stop()
+        self.left_pwm.stop()
+        self.right_pwm.stop()
         GPIO.cleanup()
-        print("GPIO cleaned up")
-
-# ------------------------
-#  Example test run
-# ------------------------
-if __name__ == "__main__":
-    try:
-        motor = MotorController()
-        motor.forward(1)
-        motor.turn_left()
-        motor.forward(1)
-        motor.turn_right()
-        motor.turn_around()
-        motor.backward(1)
-        motor.stop()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        motor.cleanup()
+    
+    def __del__(self):
+        """Destructor - ensure motors are stopped."""
+        try:
+            self.cleanup()
+        except Exception:
+            pass
