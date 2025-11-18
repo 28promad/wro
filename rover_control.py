@@ -14,7 +14,7 @@ import tty
 import select
 
 # ---------------- Configuration ----------------
-LOG_DIR = "./"
+LOG_DIR = "/home/rover_logs"
 DB_FILE = os.path.join(LOG_DIR, "rover_data.db")
 
 # Tunnel and navigation parameters
@@ -392,14 +392,32 @@ async def main():
     
     setup_ultrasonic()
     
-    # Connect to databot
+    # Connect to databot with retry
     print("Connecting to databot...")
-    if not await central.connect():
-        print("❌ Failed to connect")
-        return
+    max_attempts = 5
+    attempt = 0
     
-    await central.send('Start')
-    print("✓ Connected to databot\n")
+    while attempt < max_attempts:
+        attempt += 1
+        print(f"Attempt {attempt}/{max_attempts}...")
+        
+        try:
+            if await asyncio.wait_for(central.connect(), timeout=10.0):
+                await central.send('Start')
+                await asyncio.sleep(1)
+                print("✓ Connected to databot\n")
+                break
+        except asyncio.TimeoutError:
+            print(f"Connection timeout, retrying...")
+        except Exception as e:
+            print(f"Connection error: {e}")
+        
+        if attempt < max_attempts:
+            await asyncio.sleep(3)
+    else:
+        print("❌ Failed to connect after multiple attempts")
+        print("⚠️  Continuing without databot (position tracking only)")
+        print("")
     
     # Timing
     last_flush = time.time()

@@ -25,7 +25,7 @@ def calibrate_forward_speed():
     motor = MotorController()
     motor.set_speed(75)  # Default speed
     
-    print("\n🚗 Moving forward for 5 seconds...")
+    print("\nMoving forward for 5 seconds...")
     print("(Mark the ending position!)")
     
     motor.forward(duration=5.0)
@@ -66,7 +66,7 @@ def calibrate_turn_rate():
     motor = MotorController()
     motor.set_speed(75)
     
-    print("\n🔄 Turning right for 2 seconds...")
+    print("\nTurning right for 2 seconds...")
     print("(Observe the angle!)")
     
     motor.turn_right(duration=2.0)
@@ -76,7 +76,7 @@ def calibrate_turn_rate():
     actual_angle = float(input("Enter actual angle turned (in degrees): "))
     calculated_rate = actual_angle / 2.0
     
-    print(f"\n📊 Results:")
+    print(f"\nResults:")
     print(f"   Time: 2.0 seconds")
     print(f"   Angle: {actual_angle:.1f} degrees")
     print(f"   Calculated turn rate: {calculated_rate:.1f} deg/s")
@@ -107,7 +107,7 @@ def calibrate_wheel_circumference():
         circumference_cm = float(input("Enter wheel circumference (cm): "))
         circumference_m = circumference_cm / 100
     
-    print(f"\n📊 Results:")
+    print(f"\nResults:")
     print(f"   Wheel circumference: {circumference_m:.4f} meters")
     print(f"\n   Update rover_control.py:")
     print(f"   WHEEL_CIRCUMFERENCE = {circumference_m:.4f}")
@@ -137,7 +137,7 @@ def run_test_pattern():
     wheel_speed = 0.15  # m/s (update with your calibrated value)
     turn_rate = 90.0    # deg/s (update with your calibrated value)
     
-    print("\n🎯 Starting test pattern...")
+    print("\nStarting test pattern...")
     
     for i in range(4):
         print(f"\nSide {i+1}/4:")
@@ -163,7 +163,7 @@ def run_test_pattern():
 def main():
     """Main calibration menu."""
     print("\n" + "="*60)
-    print("🔧 ROVER ODOMETRY CALIBRATION TOOL")
+    print("ROVER ODOMETRY CALIBRATION TOOL")
     print("="*60)
     print("\nThis tool helps you calibrate your rover for accurate navigation.")
     print("You should calibrate in this order:")
@@ -187,7 +187,7 @@ def main():
             elif choice == "4":
                 run_test_pattern()
             elif choice == "5":
-                print("\n👋 Exiting calibration tool")
+                print("\nExiting calibration tool")
                 break
             else:
                 print("❌ Invalid option")
