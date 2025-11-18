@@ -14,7 +14,7 @@ import tty
 import select
 
 # ---------------- Configuration ----------------
-LOG_DIR = "/home/rover_logs"
+LOG_DIR = "./"
 DB_FILE = os.path.join(LOG_DIR, "rover_data.db")
 
 # Tunnel and navigation parameters
