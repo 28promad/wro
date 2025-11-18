@@ -21,14 +21,14 @@ DB_FILE = os.path.join(LOG_DIR, "rover_data.db")
 TUNNEL_LENGTH = 10.0        # meters (maximum forward distance)
 OBSTACLE_DIST = 15.0        # cm threshold for obstacle detection
 BUFFER_SIZE = 50            # Database write buffer size
-FLUSH_INTERVAL = 30.0       # seconds
+FLUSH_INTERVAL = 10.0       # seconds
 
 # Ultrasonic sensors: (trigger_pin, echo_pin)
 # Front-facing sensors (for forward navigation)
 ULTRASONIC_FRONT = {
-    "front_left":   (5, 6),
-    "front_center": (13, 19),
-    "front_right":  (26, 21)
+    "front_left":   (2, 3),
+    "front_center": (17, 27),
+    "front_right":  (22, 10)
 }
 
 # Rear-facing sensors (for return navigation)
