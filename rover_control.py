@@ -33,9 +33,9 @@ ULTRASONIC_FRONT = {
 
 # Rear-facing sensors (for return navigation)
 ULTRASONIC_REAR = {
-    "rear_left":    (17, 27),
-    "rear_center":  (23, 24),
-    "rear_right":   (25, 8)
+    "rear_left":    (2, 3),
+    "rear_center":  (17, 27),
+    "rear_right":   (22, 10)
 }
 
 # Wheel odometry parameters (CALIBRATE THESE!)
