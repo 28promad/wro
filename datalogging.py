@@ -12,7 +12,7 @@ from collections import deque
 from comms.central import BLE_UART_Central
 
 # ---------------- Configuration ----------------
-LOG_DIR = "/home/rover_logs"
+LOG_DIR = "./"
 DB_FILE = os.path.join(LOG_DIR, "rover_data.db")
 
 # Buffer configuration
