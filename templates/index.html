@@ -348,20 +348,38 @@
 
             <div class="sensor-card amber">
                 <div class="sensor-header">
-                    <span class="sensor-label">Position X</span>
-                    <span class="sensor-icon">📍</span>
+                    <span class="sensor-label">Heading</span>
+                    <span class="sensor-icon">🧭</span>
                 </div>
-                <div class="sensor-value" id="posXValue">--<span class="sensor-unit">m</span></div>
-                <span class="sensor-status">Tracking</span>
+                <div class="sensor-value" id="headingValue">--<span class="sensor-unit">°</span></div>
+                <span class="sensor-status" id="headingDir">North</span>
             </div>
 
             <div class="sensor-card purple">
                 <div class="sensor-header">
-                    <span class="sensor-label">Position Y</span>
-                    <span class="sensor-icon">📍</span>
+                    <span class="sensor-label">Incline</span>
+                    <span class="sensor-icon">⛰️</span>
                 </div>
-                <div class="sensor-value" id="posYValue">--<span class="sensor-unit">m</span></div>
-                <span class="sensor-status">Tracking</span>
+                <div class="sensor-value" id="inclineValue">--<span class="sensor-unit">°</span></div>
+                <span class="sensor-status" id="inclineStatus">Level</span>
+            </div>
+
+            <div class="sensor-card green">
+                <div class="sensor-header">
+                    <span class="sensor-label">Pitch</span>
+                    <span class="sensor-icon">↕️</span>
+                </div>
+                <div class="sensor-value" id="pitchValue">--<span class="sensor-unit">°</span></div>
+                <span class="sensor-status">Tilt</span>
+            </div>
+
+            <div class="sensor-card blue">
+                <div class="sensor-header">
+                    <span class="sensor-label">Roll</span>
+                    <span class="sensor-icon">↔️</span>
+                </div>
+                <div class="sensor-value" id="rollValue">--<span class="sensor-unit">°</span></div>
+                <span class="sensor-status">Tilt</span>
             </div>
         </div>
 

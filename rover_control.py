@@ -21,21 +21,21 @@ DB_FILE = os.path.join(LOG_DIR, "rover_data.db")
 TUNNEL_LENGTH = 10.0        # meters (maximum forward distance)
 OBSTACLE_DIST = 15.0        # cm threshold for obstacle detection
 BUFFER_SIZE = 50            # Database write buffer size
-FLUSH_INTERVAL = 10.0       # seconds
+FLUSH_INTERVAL = 30.0       # seconds
 
 # Ultrasonic sensors: (trigger_pin, echo_pin)
 # Front-facing sensors (for forward navigation)
 ULTRASONIC_FRONT = {
-    "front_left":   (2, 3),
-    "front_center": (17, 27),
-    "front_right":  (22, 10)
+    "front_left":   (5, 6),
+    "front_center": (13, 19),
+    "front_right":  (26, 21)
 }
 
 # Rear-facing sensors (for return navigation)
 ULTRASONIC_REAR = {
-    "rear_left":    (2, 3),
-    "rear_center":  (17, 27),
-    "rear_right":   (22, 10)
+    "rear_left":    (17, 27),
+    "rear_center":  (23, 24),
+    "rear_right":   (25, 8)
 }
 
 # Wheel odometry parameters (CALIBRATE THESE!)
@@ -120,9 +120,9 @@ class SQLiteDataLogger:
     def should_flush(self):
         return len(self.buffer) >= self.buffer_size
 
-# ---------------- Odometry Calculator ----------------
+# ---------------- Odometry Calculator with IMU Integration ----------------
 class Odometry:
-    """Calculate position using wheel odometry (speed × time)."""
+    """Calculate position using wheel odometry + IMU heading and incline."""
     
     def __init__(self, wheel_speed=0.15, turn_rate=90.0):
         self.wheel_speed = wheel_speed  # m/s
@@ -131,11 +131,17 @@ class Odometry:
         # Current state
         self.x = 0.0          # meters
         self.y = 0.0          # meters
-        self.heading = 0.0    # degrees (0 = forward)
+        self.heading = 0.0    # radians (from IMU)
+        self.pitch = 0.0      # radians (from IMU)
+        self.roll = 0.0       # radians (from IMU)
+        self.incline = 0.0    # radians (total tilt)
         
         # Start position (for return navigation)
         self.start_x = 0.0
         self.start_y = 0.0
+        
+        # IMU data available flag
+        self.has_imu_data = False
     
     def set_origin(self):
         """Set current position as the origin/start point."""
@@ -143,36 +149,68 @@ class Odometry:
         self.start_y = self.y
         print(f"📍 Origin set at ({self.x:.2f}, {self.y:.2f})")
     
-    def update_forward(self, duration):
-        """Update position after moving forward."""
-        import math
-        distance = self.wheel_speed * duration
-        
-        # Convert heading to radians and update position
-        rad = math.radians(self.heading)
-        self.x += distance * math.cos(rad)
-        self.y += distance * math.sin(rad)
+    def update_imu(self, yaw, pitch, roll, incline):
+        """Update orientation from IMU data."""
+        self.heading = yaw        # radians
+        self.pitch = pitch        # radians
+        self.roll = roll          # radians
+        self.incline = incline    # radians
+        self.has_imu_data = True
     
-    def update_backward(self, duration):
+    def update_forward(self, duration, use_incline=True):
+        """
+        Update position after moving forward.
+        Accounts for incline if IMU data available.
+        """
+        import math
+        
+        # Base distance from wheel speed
+        wheel_distance = self.wheel_speed * duration
+        
+        # Adjust for incline (horizontal distance = wheel_distance * cos(incline))
+        if use_incline and self.has_imu_data:
+            horizontal_distance = wheel_distance * math.cos(self.incline)
+        else:
+            horizontal_distance = wheel_distance
+        
+        # Update position using IMU heading if available
+        self.x += horizontal_distance * math.cos(self.heading)
+        self.y += horizontal_distance * math.sin(self.heading)
+    
+    def update_backward(self, duration, use_incline=True):
         """Update position after moving backward."""
         import math
-        distance = self.wheel_speed * duration
         
-        rad = math.radians(self.heading)
-        self.x -= distance * math.cos(rad)
-        self.y -= distance * math.sin(rad)
+        wheel_distance = self.wheel_speed * duration
+        
+        if use_incline and self.has_imu_data:
+            horizontal_distance = wheel_distance * math.cos(self.incline)
+        else:
+            horizontal_distance = wheel_distance
+        
+        self.x -= horizontal_distance * math.cos(self.heading)
+        self.y -= horizontal_distance * math.sin(self.heading)
     
     def update_turn_left(self, duration):
-        """Update heading after turning left."""
-        angle_change = self.turn_rate * duration
-        self.heading += angle_change
-        self.heading %= 360  # Keep between 0-360
+        """Update heading after turning left (fallback if no IMU)."""
+        if not self.has_imu_data:
+            angle_change = math.radians(self.turn_rate * duration)
+            self.heading += angle_change
+            # Normalize to [-pi, pi]
+            while self.heading > math.pi:
+                self.heading -= 2 * math.pi
+            while self.heading < -math.pi:
+                self.heading += 2 * math.pi
     
     def update_turn_right(self, duration):
-        """Update heading after turning right."""
-        angle_change = self.turn_rate * duration
-        self.heading -= angle_change
-        self.heading %= 360
+        """Update heading after turning right (fallback if no IMU)."""
+        if not self.has_imu_data:
+            angle_change = math.radians(self.turn_rate * duration)
+            self.heading -= angle_change
+            while self.heading > math.pi:
+                self.heading -= 2 * math.pi
+            while self.heading < -math.pi:
+                self.heading += 2 * math.pi
     
     def distance_from_start(self):
         """Calculate straight-line distance from start position."""
@@ -183,11 +221,20 @@ class Odometry:
     
     def get_position(self):
         """Return current position dict."""
+        import math
         return {
             'pos_x': self.x,
             'pos_y': self.y,
-            'yaw': math.radians(self.heading),  # Convert to radians for consistency
-            'distance_traveled': self.distance_from_start()
+            'yaw': self.heading,                      # radians
+            'pitch': self.pitch,                      # radians
+            'roll': self.roll,                        # radians
+            'incline': self.incline,                  # radians
+            'heading_deg': math.degrees(self.heading),
+            'pitch_deg': math.degrees(self.pitch),
+            'roll_deg': math.degrees(self.roll),
+            'incline_deg': math.degrees(self.incline),
+            'distance_traveled': self.distance_from_start(),
+            'has_imu': self.has_imu_data
         }
 
 # ---------------- Ultrasonic Sensor Setup ----------------
