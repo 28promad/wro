@@ -241,8 +241,8 @@ def visual_display():
                     print(f"{name:15} [{dist:5.1f}cm] {bar}")
                 elif dist is not None:
                     print(f"{name:15} [{dist:5.1f}cm] ▓▓▓▓▓ (out of range)")
-                elif dist is None:
-                    print(f"{name:15} [ ERROR ] ❌")
+                else:
+                    print(f"{name:15} ▓▓▓▓▓ (out of range)")
                 
                 time.sleep(0.01)
             
