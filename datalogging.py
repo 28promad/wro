@@ -17,7 +17,7 @@ DB_FILE = os.path.join(LOG_DIR, "rover_data.db")
 
 # Buffer configuration
 BUFFER_SIZE = 50           # Write to DB every 50 entries
-FLUSH_INTERVAL = 5.0      # Or every 30 seconds
+FLUSH_INTERVAL = 1.0      # Or every 2 seconds
 
 # Reconnection configuration
 RECONNECT_DELAY = 5.0      # Seconds to wait before reconnect attempt
