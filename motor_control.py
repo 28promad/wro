@@ -7,7 +7,7 @@ import time
 class MotorController:
     """Controls the rover's motors with L298N motor driver."""
     
-    def __init__(self, left_pins=(21, 20, 16), right_pins=(26, 12, 23), default_speed=35):
+    def __init__(self, left_pins=(21, 20, 16), right_pins=(26, 12, 1), default_speed=35):
         """
         Initialize motor controller.
         
