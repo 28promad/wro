@@ -85,10 +85,8 @@ def get_stats():
             AVG(voc) as avg_voc,
             AVG(temp) as avg_temp,
             AVG(hum) as avg_hum,
-            AVG(incline) as avg_incline,
             MAX(co2) as max_co2,
-            MAX(temp) as max_temp,
-            MAX(incline) as max_incline
+            MAX(temp) as max_temp
         FROM sensor_data
         WHERE timestamp > datetime('now', '-1 hour')
     """)
