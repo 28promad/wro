@@ -36,9 +36,9 @@ print("")
 # ---------------- Configuration ----------------
 # Front sensors (for forward navigation)
 ULTRASONIC_FRONT = {
-    "front_left":   (5, 6),
-    "front_center": (13, 19),
-    "front_right":  (26, 21)
+    "front_left":   (15, 14),
+    "front_center": (23, 18),
+    "front_right":  (25, 24)
 }
 
 # Rear sensors (for return navigation) - DISABLED FOR TESTING
