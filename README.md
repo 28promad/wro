@@ -330,3 +330,5 @@ Common log messages:
 ---
 
 **Ready to navigate! 🚀**
+
+# CHANGED TO USING 3 FRONT ULTRASONIC SENSORS + 1 FOR REAR
