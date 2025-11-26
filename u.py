@@ -74,9 +74,9 @@ class HCSR04:
 
 # Front sensors
 ULTRASONIC_FRONT = {
-    "front_right":  (15, 14),
-    "front_center": (23, 18),
-    "front_left":   (25, 24)
+    "front_right":  (6, 5),
+    "front_center": (24, 25),
+    "front_left":   (23, 18)
 }
 
 # Rear sensors (disabled)
