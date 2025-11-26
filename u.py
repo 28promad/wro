@@ -36,7 +36,7 @@ print("")
 ULTRASONIC_FRONT = {
     "front_right":   (3, 2),
     "front_center":  (24, 25),
-    "front_left":    (23, 18),
+    "front_left":    (23, 18)
 }
 
 ULTRASONIC_REAR = {
