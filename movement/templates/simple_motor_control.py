@@ -1,92 +1,72 @@
-import RPi.GPIO as GPIO
+# python
+from gpiozero import Motor, PWMOutputDevice
 from time import sleep
 
-GPIO.setwarnings(False)
 
-# Right Motor
-in1 = 12
-in2 = 1
-en_a = 26
-# Left Motor
-in3 = 20
-in4 = 16
-en_b = 21
+# Right motor
+right_motor = Motor(forward=20, backward=16, pwm=True)
+right_enable = PWMOutputDevice(21)
 
+# Left motor
+left_motor = Motor(forward=12, backward=13, pwm=True)
+left_enable = PWMOutputDevice(7)
 
-GPIO.setmode(GPIO.BCM)
-GPIO.setup(in1,GPIO.OUT)
-GPIO.setup(in2,GPIO.OUT)
-GPIO.setup(en_a,GPIO.OUT)
+# Start both motors at 45% duty
+right_enable.value = 0.45
+left_enable.value = 0.45
 
-GPIO.setup(in3,GPIO.OUT)
-GPIO.setup(in4,GPIO.OUT)
-GPIO.setup(en_b,GPIO.OUT)
+def set_speed(level):
+    duty = level / 100
+    right_enable.value = duty
+    left_enable.value = duty
+    print(f"Speed: {level}%")
 
-q=GPIO.PWM(en_a,100)
-p=GPIO.PWM(en_b,100)
-p.start(45)
-q.start(45)
+def stop_all():
+    right_motor.stop()
+    left_motor.stop()
 
-GPIO.output(in1,GPIO.LOW)
-GPIO.output(in2,GPIO.LOW)
-GPIO.output(in4,GPIO.LOW)
-GPIO.output(in3,GPIO.LOW)
-
-# Wrap main content in a try block so we can  catch the user pressing CTRL-C and run the
-# GPIO cleanup function. This will also prevent the user seeing lots of unnecessary error messages.
 try:
-# Create Infinite loop to read user input
-   while(True):
-      # Get user Input
-      user_input = input()
+    while True:
+        user_input = input()
 
-      # To see users input
-      # print(user_input)
+        # Speed control
+        if user_input in '123456789':
+            set_speed(int(user_input) * 10)
 
-      if user_input == 'w':
-         GPIO.output(in1,GPIO.HIGH)
-         GPIO.output(in2,GPIO.LOW)
+        elif user_input == 'w':
+            right_motor.forward()
+            left_motor.forward()
+            print("Forward")
 
-         GPIO.output(in4,GPIO.HIGH)
-         GPIO.output(in3,GPIO.LOW)
+        elif user_input == 's':
+            right_motor.backward()
+            left_motor.backward()
+            print("Back")
 
-         print("Forward")
+        elif user_input == 'd':
+            # turn right: left forward, right stop/backward
+            right_motor.backward()
+            left_motor.stop()
+            print("Right")
 
-      elif user_input == 's':
-         GPIO.output(in1,GPIO.LOW)
-         GPIO.output(in2,GPIO.HIGH)
+        elif user_input == 'a':
+            # turn left: right forward, left stop/backward
+            left_motor.backward()
+            right_motor.stop()
+            print("Left")
 
-         GPIO.output(in4,GPIO.LOW)
-         GPIO.output(in3,GPIO.HIGH)
-         print('Back')
+        elif user_input == 'r':
+            # 180 turn: opposite directions
+            right_motor.forward()
+            left_motor.backward()
+            sleep(2)
+            stop_all()
+            print("180 Degree Turn")
 
-      elif user_input == 'd':
-         GPIO.output(in1,GPIO.LOW)
-         GPIO.output(in2,GPIO.HIGH)
-
-         GPIO.output(in4,GPIO.LOW)
-         GPIO.output(in3,GPIO.LOW)
-         print('Right')
-
-      elif user_input == 'a':
-         GPIO.output(in1,GPIO.HIGH)
-         GPIO.output(in2,GPIO.LOW)
-
-         GPIO.output(in4,GPIO.LOW)
-         GPIO.output(in3,GPIO.LOW)
-         print('Left')
-
-      # Press 'c' to exit the script
-      elif user_input == 'c':
-         GPIO.output(in1,GPIO.LOW)
-         GPIO.output(in2,GPIO.LOW)
-
-         GPIO.output(in4,GPIO.LOW)
-         GPIO.output(in3,GPIO.LOW)
-         print('Stop')
+        elif user_input == 'c':
+            stop_all()
+            print("Stop")
 
 except KeyboardInterrupt:
-  # Reset GPIO settings
-  GPIO.cleanup()
-  print("GPIO Clean up")
-
+    stop_all()
+    print("GPIO Clean up")
