@@ -1,9 +1,10 @@
 # rover_control.py
-# Main rover controller with 6 ultrasonic sensors and wheel odometry
-# Refactored to use gpiozero DistanceSensor and the gpiozero-based MotorController.
+# Main rover controller with 3 front + 1 rear ultrasonic sensors and wheel odometry
+# Using gpiozero for GPIO control
 
 from motor_control import MotorController
-import json, csv, time, os, asyncio
+from gpiozero import DistanceSensor
+import json, time, os, asyncio
 import sqlite3
 from datetime import datetime
 from collections import deque
@@ -14,31 +15,27 @@ import tty
 import select
 import math
 
-# gpiozero DistanceSensor
-from gpiozero import DistanceSensor
-
 # ---------------- Configuration ----------------
 LOG_DIR = "./"
 DB_FILE = os.path.join(LOG_DIR, "rover_data.db")
 
-# Tunnel and navigation parameters
-TUNNEL_LENGTH = 10.0        # meters (maximum forward distance)
-OBSTACLE_DIST = 20.0        # cm threshold for obstacle detection
+# Navigation parameters (will be set by user)
+TARGET_DISTANCE = 0.0       # meters (user will specify)
+OBSTACLE_DIST = 0.20        # meters (20cm) threshold for obstacle detection
 BUFFER_SIZE = 50            # Database write buffer size
-FLUSH_INTERVAL = 30.0       # seconds
+FLUSH_INTERVAL = 2.0       # seconds
 
-# Ultrasonic sensor pin tuples remain as (trigger_pin, echo_pin) in your original naming.
-# We'll construct DistanceSensor with named args: echo=<echo>, trigger=<trig>
+# Ultrasonic sensors: (trigger_pin, echo_pin)
+# 3 Front-facing sensors (for forward navigation)
 ULTRASONIC_FRONT = {
-    "front_right":   (15, 14),
-    "front_center":  (23, 18),
-    "front_left":    (25, 24)
+    "front_left":   (23, 18),
+    "front_center": (24, 25),
+    "front_right":  (3, 2)
 }
 
+# 1 Rear sensor (for backup detection)
 ULTRASONIC_REAR = {
-    "rear_left":     (17, 27),
-    "rear_center":   (23, 24),
-    "rear_right":    (25, 8)
+    "rear_center":  (24, 25)
 }
 
 # Wheel odometry parameters (CALIBRATE THESE!)
@@ -46,9 +43,12 @@ WHEEL_SPEED = 0.15          # meters per second at default motor speed
 TURN_RATE = 90.0            # degrees per second during turn
 WHEEL_CIRCUMFERENCE = 0.20  # meters (measure your wheel)
 
-# Globals for gpiozero DistanceSensor objects (filled by setup_ultrasonic)
-FRONT_SENSORS = {}
-REAR_SENSORS = {}
+# 180 degree turn calibration
+TURN_180_DURATION = 2.0     # seconds for 180° turn (CALIBRATE THIS!)
+
+# Sensor timeout and max distance
+SENSOR_TIMEOUT = 0.04       # 40ms timeout for distance sensor
+SENSOR_MAX_DISTANCE = 4.0   # 4 meters max range
 
 # ---------------- Database Logger ----------------
 class SQLiteDataLogger:
@@ -148,11 +148,16 @@ class Odometry:
         """Set current position as the origin/start point."""
         self.start_x = self.x
         self.start_y = self.y
-        print(f"📍 Origin set at ({self.x:.2f}, {self.y:.2f})")
+        self.x = 0.0
+        self.y = 0.0
+        self.heading = 0.0
+        print(f"📍 Origin set at current position")
     
     def update_forward(self, duration):
         """Update position after moving forward."""
         distance = self.wheel_speed * duration
+        
+        # Convert heading to radians and update position
         rad = math.radians(self.heading)
         self.x += distance * math.cos(rad)
         self.y += distance * math.sin(rad)
@@ -160,6 +165,7 @@ class Odometry:
     def update_backward(self, duration):
         """Update position after moving backward."""
         distance = self.wheel_speed * duration
+        
         rad = math.radians(self.heading)
         self.x -= distance * math.cos(rad)
         self.y -= distance * math.sin(rad)
@@ -191,206 +197,256 @@ class Odometry:
             'distance_traveled': self.distance_from_start()
         }
 
-# ---------------- Ultrasonic Sensor Setup (gpiozero) ----------------
+# ---------------- Ultrasonic Sensor Setup ----------------
 def setup_ultrasonic():
-    """Initialize all 6 ultrasonic sensors as gpiozero DistanceSensor objects."""
-    global FRONT_SENSORS, REAR_SENSORS
-
-    # Helper to instantiate DistanceSensor safely
-    def make_sensor(trig_pin, echo_pin, max_distance_m=4.0):
+    """Initialize all ultrasonic sensors using gpiozero."""
+    sensors = {}
+    
+    all_sensors = {**ULTRASONIC_FRONT, **ULTRASONIC_REAR}
+    
+    for name, (trig, echo) in all_sensors.items():
         try:
-            # Named args to be explicit: DistanceSensor(echo=<echo>, trigger=<trigger>)
-            return DistanceSensor(echo=echo_pin, trigger=trig_pin, max_distance=max_distance_m, queue_len=3)
+            # Create DistanceSensor with custom timeout and max distance
+            sensor = DistanceSensor(
+                echo=echo,
+                trigger=trig,
+                max_distance=SENSOR_MAX_DISTANCE,
+                threshold_distance=OBSTACLE_DIST
+            )
+            sensors[name] = sensor
+            print(f"  ✓ {name}: GPIO trigger={trig}, echo={echo}")
         except Exception as e:
-            print(f"⚠ Failed to create DistanceSensor (trig={trig_pin}, echo={echo_pin}): {e}")
-            return None
+            print(f"  ❌ Failed to initialize {name}: {e}")
+    
+    print(f"✓ {len(sensors)} ultrasonic sensors initialized (gpiozero)")
+    return sensors
 
-    # Build sensor objects from configuration constants
-    FRONT_SENSORS = {}
-    for name, (trig, echo) in ULTRASONIC_FRONT.items():
-        FRONT_SENSORS[name] = make_sensor(trig, echo)
-
-    REAR_SENSORS = {}
-    for name, (trig, echo) in ULTRASONIC_REAR.items():
-        REAR_SENSORS[name] = make_sensor(trig, echo)
-
-    print("✓ 6 gpiozero ultrasonic sensors initialized (objects may be None if initialization failed)")
-
-def get_sensor_readings(use_rear=False):
-    """Read either front or rear ultrasonic sensors in cm."""
-    sensors = REAR_SENSORS if use_rear else FRONT_SENSORS
+def get_sensor_readings(sensors, use_rear=False):
+    """Read front or rear ultrasonic sensors."""
+    sensor_names = list(ULTRASONIC_REAR.keys()) if use_rear else list(ULTRASONIC_FRONT.keys())
     readings = {}
-
-    for pos, sensor in sensors.items():
-        if sensor is None:
-            readings[pos] = float('inf')
+    
+    for name in sensor_names:
+        if name not in sensors:
+            readings[name] = float('inf')
             continue
-
+        
         try:
-            # DistanceSensor.distance returns meters (float between 0..max_distance)
-            val_m = sensor.distance
-            if val_m is None:
-                readings[pos] = float('inf')
-            else:
-                readings[pos] = val_m * 100.0  # meters -> cm
+            # Get distance in meters
+            distance = sensors[name].distance
+            readings[name] = distance  # Keep in meters
+            time.sleep(0.01)  # Small delay between readings
         except Exception as e:
-            # Catch runtime errors (e.g., sensor unplugged)
-            readings[pos] = float('inf')
-
+            print(f"⚠ Error reading {name}: {e}")
+            readings[name] = float('inf')
+    
     return readings
+
+def cleanup_sensors(sensors):
+    """Close all sensor objects."""
+    for sensor in sensors.values():
+        try:
+            sensor.close()
+        except Exception:
+            pass
 
 # ---------------- Navigation Logic ----------------
 class Navigator:
     """Handles autonomous navigation with obstacle avoidance."""
     
-    def __init__(self, motor, odometry, tunnel_length=10.0, obstacle_dist=15.0):
+    def __init__(self, motor, odometry, sensors, target_distance=10.0, obstacle_dist=0.20):
         self.motor = motor
         self.odometry = odometry
-        self.tunnel_length = tunnel_length
+        self.sensors = sensors
+        self.target_distance = target_distance
         self.obstacle_dist = obstacle_dist
         
-        self.reverse_mode = False
-        self.manual_mode = True # start up in manual mode
-        self.running = False
-        self.log = []
-        self.inverse_log = []
+        self.manual_mode = True  # Start in manual mode
+        self.journey_log = []    # Log of movements: [('forward', duration), ('left', duration), ...]
+        self.is_returning = False
+        self.mission_complete = False
+    
+    def set_target_distance(self, distance):
+        """Set the target distance for the mission."""
+        self.target_distance = distance
+        print(f"🎯 Target distance set to {distance:.1f} meters")
     
     def toggle_manual(self):
         """Toggle between manual and automatic control."""
+        if self.mission_complete:
+            print("⚠️  Mission complete! Reset required (press R)")
+            return
+        
         self.manual_mode = not self.manual_mode
         mode = "MANUAL" if self.manual_mode else "AUTOMATIC"
         print(f"🎮 Control mode: {mode}")
+        
         if self.manual_mode:
             self.motor.stop()
-            self.log = [] # Reset the log of turns & times
         else:
-            self.inverse_log = [] # Reset the inverse log
+            # Starting automatic mode
+            self.journey_log = []
+            self.is_returning = False
+            print(f"🚀 Starting autonomous journey to {self.target_distance:.1f}m")
+    
+    def reset_mission(self):
+        """Reset for a new mission."""
+        self.journey_log = []
+        self.is_returning = False
+        self.mission_complete = False
+        self.manual_mode = True
+        self.odometry.set_origin()
+        print("🔄 Mission reset - ready for new journey")
     
     def check_distance_limit(self):
-        """Check if rover has reached tunnel length limit."""
+        """Check if rover has reached target distance."""
         dist = self.odometry.distance_from_start()
         
-        # Reached end of tunnel
-        if not self.reverse_mode and dist >= self.tunnel_length:
-            print(f"\n🔄 REACHED TUNNEL END ({dist:.2f}m)")
-            print("Switching to REVERSE mode - using rear sensors")
-            self.reverse_mode = True
-
-            # Build inverse log for return journey
-            temp = []
-            for e in self.log:
-                if e[0] == 'left':
-                    temp.append(['right', e[1]])
-                elif e[0] == 'right':
-                    temp.append(['left', e[1]])
-                else:
-                    temp.append(e)
-
-            self.inverse_log = []
-            for i in range(len(temp), 0, -1):
-                self.inverse_log.append(temp[i-1])
-
-            # Brief stop, then start return journey
+        if not self.is_returning and dist >= self.target_distance:
+            print(f"\n🎯 TARGET REACHED ({dist:.2f}m)")
+            print("="*60)
+            print("Beginning return journey...")
+            print("="*60)
+            
+            self.is_returning = True
             self.motor.stop()
             time.sleep(0.5)
+            
+            # Perform 180 degree turn
+            print(f"🔄 Turning 180° (duration: {TURN_180_DURATION:.1f}s)")
+            self.motor.turn_right(TURN_180_DURATION)
+            self.odometry.update_turn_right(TURN_180_DURATION)
+            
+            time.sleep(0.5)
+            
+            # Now execute return journey
+            self.execute_return_journey()
             return True
         
         return False
     
-    
-    def automated_return(self):
-        """ automated navigation for return back to origin """
-        for action, duration in self.inverse_log:
-            if action != 'forward':
-                if action == 'left':
-                    print(f"Returning: TURN LEFT for {duration:.2f}s")
-                    self.motor.turn_left(duration)
-                    self.odometry.update_turn_left(duration)
-                elif action == 'right':
-                    print(f"Returning: TURN RIGHT for {duration:.2f}s")
-                    self.motor.turn_right(duration)
-                    self.odometry.update_turn_right(duration)
-            else:
-                print(f"Returning: MOVE FORWARD for {duration:.2f}s")
+    def execute_return_journey(self):
+        """Navigate back to origin by reversing the journey log."""
+        print("\n📋 Journey Log (reversed):")
+        print("-" * 60)
+        
+        # Reverse the log
+        reversed_log = []
+        for action, duration in reversed(self.journey_log):
+            if action == 'forward':
+                # Forward becomes forward (we've already turned 180°)
+                reversed_log.append(('forward', duration))
+            elif action == 'left':
+                # Left turn becomes right turn (due to 180° turn)
+                reversed_log.append(('right', duration))
+            elif action == 'right':
+                # Right turn becomes left turn (due to 180° turn)
+                reversed_log.append(('left', duration))
+        
+        # Display the plan
+        for i, (action, dur) in enumerate(reversed_log, 1):
+            print(f"  {i}. {action.upper():<8} for {dur:.2f}s")
+        
+        print("-" * 60)
+        print("Executing return journey...\n")
+        
+        # Execute each action
+        for action, duration in reversed_log:
+            if action == 'forward':
+                print(f"➡️  Moving forward {duration:.2f}s")
                 self.motor.forward(duration)
                 self.odometry.update_forward(duration)
-
-        self.reverse_mode = not self.reverse_mode
+            elif action == 'left':
+                print(f"↪️  Turning left {duration:.2f}s")
+                self.motor.turn_left(duration)
+                self.odometry.update_turn_left(duration)
+            elif action == 'right':
+                print(f"↩️  Turning right {duration:.2f}s")
+                self.motor.turn_right(duration)
+                self.odometry.update_turn_right(duration)
+            
+            time.sleep(0.2)  # Brief pause between actions
+        
         self.motor.stop()
-        print("REACHED ORIGIN. Switched to MANUAL mode.")
+        
+        # Mission complete
+        pos = self.odometry.get_position()
+        print("\n" + "="*60)
+        print("🎉 RETURN JOURNEY COMPLETE!")
+        print("="*60)
+        print(f"Final position: ({pos['pos_x']:.2f}, {pos['pos_y']:.2f})m")
+        print(f"Distance from origin: {pos['distance_traveled']:.2f}m")
+        print(f"Final heading: {self.odometry.heading:.1f}°")
+        print("="*60)
+        
+        self.mission_complete = True
+        self.manual_mode = True
+        print("\n💡 Press R to reset for new mission")
     
     def navigate_step(self):
-        """Execute one navigation step (obstacle avoidance). Keeping a log of turns and durations."""
-        if self.manual_mode:
-            return  # Don't navigate in manual mode
+        """Execute one navigation step (obstacle avoidance)."""
+        if self.manual_mode or self.is_returning:
+            return  # Don't navigate in manual mode or during return
         
-        # Check if we've reached the distance limit
+        # Check if we've reached the target distance
         if self.check_distance_limit():
             return
         
-        # Read appropriate sensors (use rear sensors when reverse_mode True)
-        readings = get_sensor_readings(use_rear=self.reverse_mode)
+        # Read front sensors (distances are in meters)
+        readings = get_sensor_readings(self.sensors, use_rear=False)
         
-        # If sensors missing keys, fall back to using front sensors
         left = readings.get('front_left', float('inf'))
         center = readings.get('front_center', float('inf'))
         right = readings.get('front_right', float('inf'))
-
-        if self.reverse_mode:
-            # When in reverse mode prefer rear sensors if available
-            left = readings.get('rear_left', left)
-            center = readings.get('rear_center', center)
-            right = readings.get('rear_right', right)
-
-        # Obstacle avoidance logic
+        
+        # Obstacle avoidance logic with logging (compare in meters)
         if center < self.obstacle_dist:
             self.motor.stop()
             time.sleep(0.1)
             
             # Decide which way to turn
+            duration = 0.4
             if left > right:
-                print(f"🚧 Obstacle ahead, turning LEFT (L:{left:.1f} R:{right:.1f})")
-                duration = 0.4
+                print(f"🚧 Obstacle ahead, turning LEFT (L:{left:.2f}m R:{right:.2f}m)")
                 self.motor.turn_left(duration)
                 self.odometry.update_turn_left(duration)
-                self.log.append(('left', duration))
+                self.journey_log.append(('left', duration))
             else:
-                print(f"🚧 Obstacle ahead, turning RIGHT (L:{left:.1f} R:{right:.1f})")
-                duration = 0.4
+                print(f"🚧 Obstacle ahead, turning RIGHT (L:{left:.2f}m R:{right:.2f}m)")
                 self.motor.turn_right(duration)
                 self.odometry.update_turn_right(duration)
-                self.log.append(('right', duration))
-
-        # Turning right if obstacle on left
+                self.journey_log.append(('right', duration))
+        
         elif left < self.obstacle_dist:
-            print(f"🚧 Obstacle on left ({left:.1f}cm), adjusting RIGHT")
-            self.motor.set_speed(60)
+            print(f"🚧 Obstacle on left ({left:.2f}m), adjusting RIGHT")
+            self.motor.set_speed(0.6)  # 60%
             duration = 0.2
-            self.log.append(('right', duration))
             self.motor.turn_right(duration)
             self.odometry.update_turn_right(duration)
-            self.motor.set_speed(75)
+            self.motor.set_speed(0.75)  # Back to 75%
+            self.journey_log.append(('right', duration))
         
-        # Turning left if obstacle on right
         elif right < self.obstacle_dist:
-            print(f"🚧 Obstacle on right ({right:.1f}cm), adjusting LEFT")
-            self.motor.set_speed(60)
+            print(f"🚧 Obstacle on right ({right:.2f}m), adjusting LEFT")
+            self.motor.set_speed(0.6)  # 60%
             duration = 0.2
-            self.log.append(('left', duration))
             self.motor.turn_left(duration)
             self.odometry.update_turn_left(duration)
-            self.motor.set_speed(75)
+            self.motor.set_speed(0.75)  # Back to 75%
+            self.journey_log.append(('left', duration))
         
         else:
-            # No obstacles - move in current direction
-            if self.reverse_mode:
-                # Moving backward toward start
-                self.motor.backward()
+            # No obstacles - move forward
+            duration = 0.2
+            self.motor.forward(duration)
+            self.odometry.update_forward(duration)
+            
+            # Append to or extend last forward entry
+            if self.journey_log and self.journey_log[-1][0] == 'forward':
+                # Extend the last forward movement
+                self.journey_log[-1] = ('forward', self.journey_log[-1][1] + duration)
             else:
-                # Moving forward into tunnel
-                duration = 0.2
-                self.log.append(('forward', duration))
-                self.motor.forward(duration)
+                self.journey_log.append(('forward', duration))
 
 # ---------------- Keyboard Input Handler ----------------
 class KeyboardInput:
@@ -413,10 +469,37 @@ class KeyboardInput:
 # ---------------- Main Async Loop ----------------
 async def main():
     """Main control loop."""
+    global TARGET_DISTANCE
+    
+    # Ask for target distance
+    print("\n" + "="*60)
+    print("🤖 DATABOT ROVER - AUTONOMOUS NAVIGATION")
+    print("   Using gpiozero for GPIO control")
+    print("="*60)
+    
+    while True:
+        try:
+            distance_input = input("\nEnter target distance (meters) [default: 5.0]: ").strip()
+            if distance_input == "":
+                TARGET_DISTANCE = 5.0
+            else:
+                TARGET_DISTANCE = float(distance_input)
+            
+            if TARGET_DISTANCE <= 0:
+                print("❌ Distance must be positive")
+                continue
+            break
+        except ValueError:
+            print("❌ Invalid input. Please enter a number.")
+    
+    print(f"\n✓ Target distance set to {TARGET_DISTANCE:.1f} meters")
+    
     # Initialize components
+    print("\nInitializing hardware...")
     motor = MotorController()
     odometry = Odometry(WHEEL_SPEED, TURN_RATE)
-    navigator = Navigator(motor, odometry, TUNNEL_LENGTH, OBSTACLE_DIST)
+    sensors = setup_ultrasonic()
+    navigator = Navigator(motor, odometry, sensors, TARGET_DISTANCE, OBSTACLE_DIST)
     logger = SQLiteDataLogger(DB_FILE, BUFFER_SIZE)
     keyboard = KeyboardInput()
     
@@ -435,17 +518,14 @@ async def main():
     central.on_receive(handle_databot_rx)
     
     print("\n" + "="*60)
-    print("🤖 DATABOT ROVER - AUTONOMOUS NAVIGATION (gpiozero)")
-    print("="*60)
     print("Controls:")
     print("  P - Set current position as origin")
     print("  C - Toggle Manual/Automatic mode")
+    print("  R - Reset mission (after completion)")
     print("  W/↑ - Forward    S/↓ - Backward")
     print("  A/← - Left       D/→ - Right")
     print("  SPACE - Stop     Q - Quit")
     print("="*60 + "\n")
-    
-    setup_ultrasonic()
     
     # Connect to databot with retry
     print("Connecting to databot...")
@@ -474,6 +554,9 @@ async def main():
         print("⚠️  Continuing without databot (position tracking only)")
         print("")
     
+    # Set origin
+    odometry.set_origin()
+    
     # Timing
     last_flush = time.time()
     last_nav = time.time()
@@ -493,6 +576,8 @@ async def main():
                     odometry.set_origin()
                 elif key.lower() == 'c':
                     navigator.toggle_manual()
+                elif key.lower() == 'r':
+                    navigator.reset_mission()
                 elif navigator.manual_mode:
                     # Manual control
                     if key in ['w', '\x1b[A']:  # W or Up arrow
@@ -515,14 +600,9 @@ async def main():
                         motor.stop()
                         print("⏸️ Stop")
             
-            # Navigation (if in automatic mode)
-            if not navigator.manual_mode and current_time - last_nav > 0.1:
+            # Navigation (if in automatic mode and not returning)
+            if not navigator.manual_mode and not navigator.is_returning and current_time - last_nav > 0.05:
                 navigator.navigate_step()
-                
-                # Update odometry based on movement
-                if motor._is_moving:
-                    odometry.update_forward(0.1)
-                
                 last_nav = current_time
             
             # Process databot sensor data
@@ -543,12 +623,12 @@ async def main():
                     last_flush = current_time
             
             # Status updates
-            if current_time - last_status > 5.0:
+            if current_time - last_status > 5.0 and not navigator.is_returning:
                 pos = odometry.get_position()
-                mode = "REVERSE" if navigator.reverse_mode else "FORWARD"
                 control = "MANUAL" if navigator.manual_mode else "AUTO"
-                print(f"📊 [{control}/{mode}] Pos: ({pos['pos_x']:.2f}, {pos['pos_y']:.2f}) "
-                      f"Heading: {odometry.heading:.1f}° Distance: {pos['distance_traveled']:.2f}m")
+                status = "COMPLETE" if navigator.mission_complete else "ACTIVE"
+                print(f"📊 [{control}/{status}] Pos: ({pos['pos_x']:.2f}, {pos['pos_y']:.2f}) "
+                      f"Heading: {odometry.heading:.1f}° Distance: {pos['distance_traveled']:.2f}m / {TARGET_DISTANCE:.1f}m")
                 last_status = current_time
             
             await asyncio.sleep(0.05)
@@ -557,21 +637,16 @@ async def main():
         print("\n\n⚠️ Interrupted!")
     finally:
         # Cleanup
-        motor.stop()
+        print("\nCleaning up...")
+        motor.cleanup()
+        cleanup_sensors(sensors)
         logger.flush()
         keyboard.cleanup()
-        # gpiozero device cleanup is automatic on program exit; if you want to be explicit:
-        try:
-            for s in list(FRONT_SENSORS.values()) + list(REAR_SENSORS.values()):
-                if s is not None:
-                    s.close()
-        except Exception:
-            pass
         
         if central.is_connected:
             await central.disconnect()
         
-        print("\n✓ Shutdown complete")
+        print("✓ Shutdown complete")
 
 # ---------------- Entry Point ----------------
 if __name__ == "__main__":
