@@ -1,247 +1,274 @@
 #!/usr/bin/env python3
-# test_ultrasonic_gpiozero.py
-# Test tool for HC-SR04 ultrasonic sensors using gpiozero
-# Compatible with Raspberry Pi 4B and Pi 5
+# test_ultrasonic_pigpio.py
+# Fully refactored ultrasonic sensor test tool using pigpio
+# Works on Raspberry Pi 4B and Raspberry Pi 5
 
 import time
 import sys
 import os
+import pigpio
 
-print("✓ Using gpiozero DistanceSensor instead of RPi.GPIO\n")
+# ============================================================
+#          HARDWARE-TIMED HC-SR04 DRIVER USING pigpio
+# ============================================================
 
-# gpiozero
-try:
-    from gpiozero import DistanceSensor
-except ImportError:
-    print("❌ ERROR: gpiozero not installed")
-    print("Install with: sudo apt install python3-gpiozero")
-    sys.exit(1)
+class HCSR04:
+    """
+    HC-SR04 ultrasonic distance sensor using pigpio hardware timing.
+    Reliable on Pi 4 + Pi 5.
+    """
+    def __init__(self, trigger_pin, echo_pin, timeout=0.04):
+        self.trigger = trigger_pin
+        self.echo = echo_pin
+        self.timeout = timeout
 
-# ---------------- Pi Version Check ----------------
-try:
-    with open('/proc/cpuinfo', 'r') as f:
-        cpuinfo = f.read()
-        if 'BCM2711' in cpuinfo:
-            print("✓ Detected: Raspberry Pi 4")
-        elif 'BCM2712' in cpuinfo:
-            print("✓ Detected: Raspberry Pi 5")
-        else:
-            print("⚠️  Raspberry Pi model unknown")
-except Exception as e:
-    print(f"⚠️  Could not read /proc/cpuinfo: {e}")
+        self.pi = pigpio.pi()
+        if not self.pi.connected:
+            raise RuntimeError("❌ pigpio daemon not running! Start with: sudo systemctl start pigpiod")
 
-print("")
-# trig echo
-# ---------------- Configuration ----------------
+        # Setup pins
+        self.pi.set_mode(self.trigger, pigpio.OUT)
+        self.pi.set_mode(self.echo, pigpio.IN)
+        self.pi.write(self.trigger, 0)
+
+        self.high_tick = None
+        self.echo_time = None
+
+        # Setup callback for echo rising/falling edges
+        self.cb = self.pi.callback(self.echo, pigpio.EITHER_EDGE, self._callback)
+
+    def _callback(self, gpio, level, tick):
+        if level == 1:  # rising edge
+            self.high_tick = tick
+        elif level == 0 and self.high_tick is not None:  # falling
+            self.echo_time = pigpio.tickDiff(self.high_tick, tick)
+            self.high_tick = None
+
+    def read(self):
+        """
+        Returns distance in centimeters, or None on timeout.
+        """
+        self.echo_time = None
+
+        # 10 microsecond trigger pulse
+        self.pi.gpio_trigger(self.trigger, 10)
+
+        start = time.time()
+        while self.echo_time is None:
+            if (time.time() - start) > self.timeout:
+                return None
+            time.sleep(0.00001)
+
+        # Convert time (microseconds) to distance in cm
+        distance_cm = (self.echo_time / 1_000_000) * 17150
+        return distance_cm
+
+    def cleanup(self):
+        self.cb.cancel()
+        self.pi.stop()
+
+
+# ============================================================
+#                    SENSOR CONFIGURATION
+# ============================================================
+
+# Front sensors
 ULTRASONIC_FRONT = {
-    "front_right":   (3, 2),
-    "front_center":  (24, 25),
-    "front_left":    (23, 18)
+    "front_right":  (15, 14),
+    "front_center": (23, 18),
+    "front_left":   (25, 24)
 }
 
-ULTRASONIC_REAR = {
-    # "rear_left":    (17, 27),
-    # "rear_center":  (23, 24),
-    # "rear_right":   (25, 8)
-}
+# Rear sensors (disabled)
+ULTRASONIC_REAR = {}
 
-ALL_SENSORS = {**ULTRASONIC_FRONT}   # Front only
-# ALL_SENSORS = {**ULTRASONIC_FRONT, **ULTRASONIC_REAR}  # Uncomment for all 6
+ALL_SENSORS = {**ULTRASONIC_FRONT}
 
-# Will store DistanceSensor objects
-SENSOR_OBJECTS = {}
+SENSOR_OBJS = {}  # Populated in setup_sensors()
 
-# ---------------- Setup gpiozero DistanceSensors ----------------
+
+# ============================================================
+#                   INITIALIZATION
+# ============================================================
+
 def setup_sensors():
-    """
-    Create gpiozero DistanceSensor objects for all sensors.
-    (Uses trigger=<trig>, echo=<echo>)
-    """
-    global SENSOR_OBJECTS
-    print("Initializing sensors...")
+    """Initialize all HC-SR04 objects."""
+    print("\nInitializing sensors with pigpio...\n")
 
-    SENSOR_OBJECTS = {}
     for name, (trig, echo) in ALL_SENSORS.items():
         try:
-            sensor = DistanceSensor(
-                trigger=trig,
-                echo=echo,
-                max_distance=4,      # meters
-                queue_len=3          # smoothing
-            )
-            SENSOR_OBJECTS[name] = sensor
-            print(f"✓ {name}: GPIO {trig} (trig), {echo} (echo)")
+            SENSOR_OBJS[name] = HCSR04(trig, echo)
+            print(f"✓ {name} initialized (Trig={trig}, Echo={echo})")
         except Exception as e:
             print(f"❌ Failed to initialize {name}: {e}")
-            SENSOR_OBJECTS[name] = None
+            SENSOR_OBJS[name] = None
 
-    print("✓ All sensors initialized\n")
+    print("")
     return True
 
-# ---------------- Distance Reading ----------------
-def read_distance_cm(name):
-    """Return distance in cm or None on error."""
-    sensor = SENSOR_OBJECTS.get(name)
+
+# ============================================================
+#                   MEASUREMENT FUNCTIONS
+# ============================================================
+
+def measure(name):
+    """Take one measurement from a specific sensor."""
+    sensor = SENSOR_OBJS.get(name)
     if sensor is None:
         return None
-    try:
-        dist_m = sensor.distance    # in meters
-        if dist_m is None:
-            return None
-        return dist_m * 100.0
-    except Exception:
-        return None
+    return sensor.read()
 
-# ---------------- Test Functions ----------------
-def test_single_sensor(name, samples=5):
-    """Test a single sensor with multiple readings."""
-    print(f"\nTesting {name}")
+
+def test_single_sensor(name, trig, echo, samples=5):
+    print(f"\nTesting {name} (Trig={trig}, Echo={echo})")
     print("-" * 50)
-
-    if name not in SENSOR_OBJECTS or SENSOR_OBJECTS[name] is None:
-        print("❌ Sensor not available or failed to initialize")
-        return False
 
     readings = []
     errors = 0
 
     for i in range(samples):
-        dist = read_distance_cm(name)
+        dist = measure(name)
+
         if dist is not None:
             readings.append(dist)
             status = "✓" if 2 <= dist <= 400 else "⚠️"
             print(f"  Sample {i+1}: {dist:6.1f} cm {status}")
         else:
-            print(f"  Sample {i+1}: ERROR ❌")
             errors += 1
+            print(f"  Sample {i+1}: TIMEOUT ❌")
+
         time.sleep(0.1)
 
     if readings:
-        avg = sum(readings)/len(readings)
-        print(f"\nAverage: {avg:.1f} cm")
-        print(f"Range:   {min(readings):.1f} – {max(readings):.1f} cm")
-        print(f"Success: {len(readings)}/{samples}")
-
-        if errors == 0:
-            print("✓ Sensor working properly!")
-        else:
-            print(f"⚠️  {errors} errors detected")
+        avg = sum(readings) / len(readings)
+        print(f"\n  Average: {avg:.1f} cm")
+        print(f"  Range:   {min(readings):.1f} - {max(readings):.1f} cm")
+        print(f"  Success: {len(readings)}/{samples}")
+        print("  ✓ Sensor working properly!" if errors == 0 else f"  ⚠️ {errors} errors detected")
     else:
-        print("❌ No valid readings")
+        print("  ❌ All measurements failed!")
 
-    return True
+    return bool(readings)
+
 
 def test_all_sensors_once():
     print("\nReading all sensors...")
     print("-" * 70)
-    print(f"{'Sensor':<15} {'Distance':<10} {'Status'}")
+    print(f"{'Sensor':<15} {'Position':<12} {'Distance':<10} {'Status'}")
     print("-" * 70)
 
-    for name in ALL_SENSORS:
-        dist = read_distance_cm(name)
+    for name, (trig, echo) in ALL_SENSORS.items():
+        dist = measure(name)
+        pos = name.replace("_", " ").title()
+
         if dist is None:
-            print(f"{name:<15} {'ERROR':<10} ❌ FAIL")
+            print(f"{name:<15} {pos:<12} {'TIMEOUT':<10} ❌ Error")
         else:
-            if 2 <= dist <= 400:
-                print(f"{name:<15} {dist:6.1f} cm   ✓ OK")
-            else:
-                print(f"{name:<15} {dist:6.1f} cm   ⚠️  Out of range")
+            status = "✓ OK" if 2 <= dist <= 400 else "⚠️ Out of range"
+            print(f"{name:<15} {pos:<12} {dist:6.1f}cm   {status}")
+
 
 def continuous_monitoring():
-    print("\nContinuous Monitoring (Ctrl+C to stop)\n")
+    print("\nContinuous Monitoring Mode (Ctrl+C to stop)\n")
+
     try:
         while True:
-            readings = []
-            for name in ALL_SENSORS:
-                dist = read_distance_cm(name)
-                readings.append(
-                    f"{name}: {dist:.1f} cm" if dist else f"{name}: ERR"
-                )
-            print("\r" + " | ".join(readings), end="")
+            line = []
+            for name in ALL_SENSORS.keys():
+                d = measure(name)
+                if d is None:
+                    line.append(f"{name}: ERR")
+                else:
+                    line.append(f"{name}: {d:5.1f}cm")
+            print("\r" + " | ".join(line), end="")
             time.sleep(0.2)
     except KeyboardInterrupt:
-        print("\n✓ Stopped")
+        print("\n\n✓ Monitoring stopped")
+
 
 def visual_display():
-    print("\nVisual Display Mode (Ctrl+C to stop)\n")
+    print("\nVisual Display (Ctrl+C to stop)\n")
+
     try:
         while True:
-            os.system('clear')
-            print("ULTRASONIC SENSOR VISUAL DISPLAY\n")
+            os.system("clear")
+            print("╔══════════════════════════════════════════════╗")
+            print("║          ULTRASONIC SENSOR DISPLAY          ║")
+            print("╚══════════════════════════════════════════════╝\n")
 
-            for name in ALL_SENSORS:
-                dist = read_distance_cm(name)
+            for name in ALL_SENSORS.keys():
+                dist = measure(name)
                 if dist is None:
-                    print(f"{name:<15} ERROR")
-                    continue
-
-                if dist <= 100:
-                    bar = "█" * int(dist/2)
-                    print(f"{name:<15} [{dist:5.1f} cm] {bar}")
+                    print(f"{name:15}  ERROR")
                 else:
-                    print(f"{name:<15} [{dist:5.1f} cm] ▓▓▓▓▓ (out)")
+                    bar = "█" * int(min(dist / 2, 50))
+                    print(f"{name:15} [{dist:5.1f}cm] {bar}")
+
+            print("\nPress Ctrl+C to exit")
             time.sleep(0.5)
+
     except KeyboardInterrupt:
-        print("\n✓ Stopped")
+        print("\n✓ Display stopped")
+
 
 def obstacle_detection_test():
     print("\nObstacle Detection Test (Ctrl+C to stop)\n")
-    OBSTACLE = 15
+    OBST = 15.0
 
     try:
         while True:
-            print("\n--- FRONT SENSORS ---")
-            readings = {name: read_distance_cm(name) for name in ULTRASONIC_FRONT}
-
-            for name, dist in readings.items():
-                if dist is None:
-                    print(f"{name}: ERROR")
-                else:
-                    print(f"{name}: {dist:.1f} cm")
-
-            left = readings['front_left']
-            center = readings['front_center']
-            right = readings['front_right']
-
-            print("\n💡 Decision:", end=" ")
-
-            if center and center < OBSTACLE:
-                print("Obstacle AHEAD → ", end="")
-                print("LEFT" if left > right else "RIGHT")
-            elif left and left < OBSTACLE:
-                print("Obstacle LEFT → turn RIGHT")
-            elif right and right < OBSTACLE:
-                print("Obstacle RIGHT → turn LEFT")
-            else:
-                print("Clear path → FORWARD")
-
             time.sleep(0.5)
+            readings = {name: measure(name) or float("inf") for name in ULTRASONIC_FRONT}
+
+            left = readings["front_left"]
+            center = readings["front_center"]
+            right = readings["front_right"]
+
+            print("\n--- FRONT SENSORS ---")
+            for n, v in readings.items():
+                print(f"{n}: {v:.1f} cm")
+
+            print("\nDecision:", end=" ")
+
+            if center < OBST:
+                print("Turn LEFT" if left > right else "Turn RIGHT")
+            elif left < OBST:
+                print("Adjust RIGHT")
+            elif right < OBST:
+                print("Adjust LEFT")
+            else:
+                print("FORWARD")
 
     except KeyboardInterrupt:
-        print("\n✓ Stopped")
+        print("\n✓ Test stopped")
 
 
 def show_wiring_guide():
-    print("\n" + "="*70)
-    print("ULTRASONIC SENSOR WIRING GUIDE (gpiozero)")
-    print("="*70)
-    print("\nTrig → GPIO")
-    print("Echo → GPIO (with voltage divider!)")
-    print("VCC  → 5V")
-    print("GND  → Ground\n")
-    print(f"{'Sensor':<15} {'Trig':<10} {'Echo':<10}")
-    print("-"*40)
+    print("\n" + "=" * 60)
+    print("                    WIRING GUIDE")
+    print("=" * 60)
+    print("\nEach HC-SR04 needs VCC, GND, Trig, Echo")
+    print("Echo MUST use a 1kΩ + 2kΩ voltage divider!\n")
+
+    print(f"{'Sensor':<15} {'Trig Pin':<10} {'Echo Pin':<10}")
+    print("-" * 60)
+
     for name, (trig, echo) in ALL_SENSORS.items():
         print(f"{name:<15} {trig:<10} {echo:<10}")
-    print("="*40)
 
-# ---------------- Menu ----------------
+    print("=" * 60)
+
+
+# ============================================================
+#                         MAIN MENU
+# ============================================================
+
 def main_menu():
     while True:
-        print("\n" + "="*60)
-        print(" ULTRASONIC TEST TOOL (gpiozero)")
-        print("="*60)
-        print("1. Test Single Sensor")
+        print("\n" + "=" * 70)
+        print("           🔍 ULTRASONIC SENSOR TEST TOOL (pigpio)")
+        print("=" * 70)
+        print("\n1. Test Single Sensor")
         print("2. Test All Sensors")
         print("3. Continuous Monitoring")
         print("4. Visual Display")
@@ -249,43 +276,59 @@ def main_menu():
         print("6. Show Wiring Guide")
         print("7. Exit\n")
 
-        choice = input("Select [1-7]: ").strip()
+        choice = input("Select option [1-7]: ").strip()
 
         if choice == "1":
             print("\nAvailable sensors:")
-            for i, name in enumerate(ALL_SENSORS, start=1):
-                print(f"  {i}. {name}")
-            sel = input("Select sensor #: ")
+            for i, name in enumerate(ALL_SENSORS.keys(), 1):
+                print(f" {i}. {name}")
+            sel = input("\nSelect sensor: ")
             try:
-                idx = int(sel) - 1
-                name = list(ALL_SENSORS.keys())[idx]
-                test_single_sensor(name, samples=10)
+                name = list(ALL_SENSORS.keys())[int(sel)-1]
+                trig, echo = ALL_SENSORS[name]
+                test_single_sensor(name, trig, echo, samples=10)
             except:
-                print("Invalid selection!")
+                print("❌ Invalid selection")
 
         elif choice == "2":
             test_all_sensors_once()
+
         elif choice == "3":
             continuous_monitoring()
+
         elif choice == "4":
             visual_display()
+
         elif choice == "5":
             obstacle_detection_test()
+
         elif choice == "6":
             show_wiring_guide()
+
         elif choice == "7":
-            print("Goodbye!")
             break
+
         else:
-            print("Invalid option")
+            print("❌ Invalid option")
 
-# ---------------- Main ----------------
+
+# ============================================================
+#                     PROGRAM ENTRY POINT
+# ============================================================
+
 if __name__ == "__main__":
-    print("="*60)
-    print(" ULTRASONIC SENSOR TEST TOOL (gpiozero)")
-    print("="*60)
+    print("=" * 70)
+    print("           🔍 ULTRASONIC SENSOR TEST TOOL (pigpio)")
+    print("           Compatible with Pi 4B and Pi 5")
+    print("=" * 70)
 
-    setup_sensors()
-    main_menu()
-
-    print("\n✓ Done")
+    try:
+        setup_sensors()
+        main_menu()
+    except KeyboardInterrupt:
+        print("\n\n⚠️ Interrupted by user")
+    finally:
+        for s in SENSOR_OBJS.values():
+            if s:
+                s.cleanup()
+        print("✓ pigpio cleanup complete")
