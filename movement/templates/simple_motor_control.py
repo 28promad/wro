@@ -12,8 +12,8 @@ left_motor = Motor(forward=12, backward=13, pwm=True)
 left_enable = PWMOutputDevice(7)
 
 # Start both motors at 45% duty
-right_enable.value = 0.45
-left_enable.value = 0.45
+right_enable.value = 0.2
+left_enable.value = 0.2
 
 def set_speed(level):
     duty = level / 100

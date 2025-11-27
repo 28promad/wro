@@ -31,12 +31,12 @@ print("")
 ULTRASONIC_FRONT = {
     "front_left":   (23, 18),   # (trigger, echo)
     "front_center": (24, 25),
-    "front_right":  (3, 2)
+    "front_right":  (26, 8)
 }
 
 # Rear sensors (for return navigation)
 ULTRASONIC_REAR = {
-    "rear_center":  (24, 25)
+    "rear_center":  (3, 4)
 }
 
 ALL_SENSORS = {**ULTRASONIC_FRONT, **ULTRASONIC_REAR}

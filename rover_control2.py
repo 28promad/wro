@@ -28,14 +28,14 @@ FLUSH_INTERVAL = 2.0       # seconds
 # Ultrasonic sensors: (trigger_pin, echo_pin)
 # 3 Front-facing sensors (for forward navigation)
 ULTRASONIC_FRONT = {
-    "front_left":   (23, 18),
+    "front_left":   (23, 18),   # (trigger, echo)
     "front_center": (24, 25),
-    "front_right":  (3, 2)
+    "front_right":  (26, 8)
 }
 
-# 1 Rear sensor (for backup detection)
+# Rear sensors (for return navigation)
 ULTRASONIC_REAR = {
-    "rear_center":  (24, 25)
+    "rear_center":  (3, 4)
 }
 
 # Wheel odometry parameters (CALIBRATE THESE!)
