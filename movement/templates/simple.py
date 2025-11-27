@@ -37,11 +37,15 @@ try:
             right_motor.forward()
             left_motor.forward()
             print("Forward")
+            sleep(0.4)
+            user_input = 'o'
 
         elif user_input == 's':
             right_motor.backward()
             left_motor.backward()
             print("Back")
+            sleep(0.4)
+            user_input = 'o'
 
         elif user_input == 'd':
             # turn right: left forward, right stop/backward
@@ -54,6 +58,8 @@ try:
             left_motor.backward()
             right_motor.stop()
             print("Left")
+            sleep(0.4)
+            user_input = 'o'
 
         elif user_input == 'r':
             # 180 turn: opposite directions
@@ -62,14 +68,18 @@ try:
             sleep(2)
             stop_all()
             print("180 Degree Turn")
+            sleep(0.4)
+            user_input = 'o'
 
         elif user_input == 't':
             # 180 turn: opposite directions
-            right_motor.backward()
+            right_motor.backward()s
             left_motor.forward()
             sleep(2)
             stop_all()
             print("180 Degree Turn")
+            sleep(0.4)
+            user_input = 'o'
 
 
         elif user_input == 'c':
