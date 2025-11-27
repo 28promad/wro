@@ -7,7 +7,7 @@ import time
 class MotorController:
     """Controls the rover's motors with L298N motor driver using gpiozero."""
     
-    def __init__(self, left_pins=(21, 20, 16), right_pins=(7, 12, 13), default_speed=0.2):
+    def __init__(self, left_pins=(21, 20, 16), right_pins=(7, 12, 13), default_speed=0.4):
         """
         Initialize motor controller.
         

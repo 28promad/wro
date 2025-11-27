@@ -21,7 +21,7 @@ DB_FILE = os.path.join(LOG_DIR, "rover_data.db")
 
 # Navigation parameters (will be set by user)
 TARGET_DISTANCE = 0.0       # meters (user will specify)
-OBSTACLE_DIST = 0.20        # meters (20cm) threshold for obstacle detection
+OBSTACLE_DIST = 0.10        # meters (20cm) threshold for obstacle detection
 BUFFER_SIZE = 50            # Database write buffer size
 FLUSH_INTERVAL = 2.0       # seconds
 
@@ -420,7 +420,7 @@ class Navigator:
         elif left < self.obstacle_dist:
             print(f"🚧 Obstacle on left ({left:.2f}m), adjusting RIGHT")
             self.motor.set_speed(0.6)  # 60%
-            duration = 0.2
+            duration = 0.4
             self.motor.turn_right(duration)
             self.odometry.update_turn_right(duration)
             self.motor.set_speed(0.75)  # Back to 75%
@@ -429,7 +429,7 @@ class Navigator:
         elif right < self.obstacle_dist:
             print(f"🚧 Obstacle on right ({right:.2f}m), adjusting LEFT")
             self.motor.set_speed(0.6)  # 60%
-            duration = 0.2
+            duration = 0.4
             self.motor.turn_left(duration)
             self.odometry.update_turn_left(duration)
             self.motor.set_speed(0.75)  # Back to 75%
