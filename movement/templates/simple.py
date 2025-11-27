@@ -63,6 +63,15 @@ try:
             stop_all()
             print("180 Degree Turn")
 
+        elif user_input == 't':
+            # 180 turn: opposite directions
+            right_motor.backward()
+            left_motor.forward()
+            sleep(2)
+            stop_all()
+            print("180 Degree Turn")
+
+
         elif user_input == 'c':
             stop_all()
             print("Stop")
