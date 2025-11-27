@@ -1,9 +1,11 @@
 # rover_control.py
-# Main rover controller with 6 ultrasonic sensors and wheel odometry
+# Main rover controller with 3 front + 1 rear ultrasonic sensors and wheel odometry
+# Using gpiozero for GPIO control
+# IMPROVED: Wall following + hysteresis + 45° turns for tight spaces
 
 from motor_control import MotorController
-import RPi.GPIO as GPIO
-import json, csv, time, os, asyncio
+from gpiozero import DistanceSensor
+import json, time, os, asyncio
 import sqlite3
 from datetime import datetime
 from collections import deque
@@ -12,36 +14,47 @@ import sys
 import termios
 import tty
 import select
+import math
 
 # ---------------- Configuration ----------------
 LOG_DIR = "./"
 DB_FILE = os.path.join(LOG_DIR, "rover_data.db")
 
-# Tunnel and navigation parameters
-TUNNEL_LENGTH = 10.0        # meters (maximum forward distance)
-OBSTACLE_DIST = 15.0        # cm threshold for obstacle detection
+# Navigation parameters (will be set by user)
+TARGET_DISTANCE = 0.0       # meters (user will specify)
+OBSTACLE_DIST = 0.10        # meters (20cm) threshold for obstacle detection
 BUFFER_SIZE = 50            # Database write buffer size
-FLUSH_INTERVAL = 30.0       # seconds
+FLUSH_INTERVAL = 2.0       # seconds
 
 # Ultrasonic sensors: (trigger_pin, echo_pin)
-# Front-facing sensors (for forward navigation)
+# 3 Front-facing sensors (for forward navigation)
 ULTRASONIC_FRONT = {
-    "front_right":   (15, 14),
-    "front_center": (23, 18),
-    "front_left":  (25, 24)
+    "front_left":   (23, 18),   # (trigger, echo)
+    "front_center": (24, 25),
+    "front_right":  (26, 8)
 }
 
-# Rear-facing sensors (for return navigation)
+# Rear sensors (for return navigation)
 ULTRASONIC_REAR = {
-    "rear_left":    (17, 27),
-    "rear_center":  (23, 24),
-    "rear_right":   (25, 8)
+    "rear_center":  (3, 4)
 }
 
 # Wheel odometry parameters (CALIBRATE THESE!)
 WHEEL_SPEED = 0.15          # meters per second at default motor speed
 TURN_RATE = 90.0            # degrees per second during turn
 WHEEL_CIRCUMFERENCE = 0.20  # meters (measure your wheel)
+
+# 180 degree turn calibration
+TURN_180_DURATION = 2.0     # seconds for 180° turn (CALIBRATE THIS!)
+
+# Sensor timeout and max distance
+SENSOR_TIMEOUT = 0.04       # 40ms timeout for distance sensor
+SENSOR_MAX_DISTANCE = 4.0   # 4 meters max range
+
+# Wall following parameters
+WALL_FOLLOW_ENABLED = True  # Enable wall following when in tight spaces
+WALL_TARGET_DISTANCE = 0.20 # Target distance from wall (20cm)
+WALL_TOLERANCE = 0.05       # +/- 5cm tolerance
 
 # ---------------- Database Logger ----------------
 class SQLiteDataLogger:
@@ -141,11 +154,13 @@ class Odometry:
         """Set current position as the origin/start point."""
         self.start_x = self.x
         self.start_y = self.y
-        print(f"📍 Origin set at ({self.x:.2f}, {self.y:.2f})")
+        self.x = 0.0
+        self.y = 0.0
+        self.heading = 0.0
+        print(f"🔧 Origin set at current position")
     
     def update_forward(self, duration):
         """Update position after moving forward."""
-        import math
         distance = self.wheel_speed * duration
         
         # Convert heading to radians and update position
@@ -155,7 +170,6 @@ class Odometry:
     
     def update_backward(self, duration):
         """Update position after moving backward."""
-        import math
         distance = self.wheel_speed * duration
         
         rad = math.radians(self.heading)
@@ -176,7 +190,6 @@ class Odometry:
     
     def distance_from_start(self):
         """Calculate straight-line distance from start position."""
-        import math
         dx = self.x - self.start_x
         dy = self.y - self.start_y
         return math.sqrt(dx**2 + dy**2)
@@ -192,150 +205,458 @@ class Odometry:
 
 # ---------------- Ultrasonic Sensor Setup ----------------
 def setup_ultrasonic():
-    """Initialize all 6 ultrasonic sensors."""
-    GPIO.setmode(GPIO.BCM)
+    """Initialize all ultrasonic sensors using gpiozero."""
+    sensors = {}
     
     all_sensors = {**ULTRASONIC_FRONT, **ULTRASONIC_REAR}
+    
     for name, (trig, echo) in all_sensors.items():
-        GPIO.setup(trig, GPIO.OUT)
-        GPIO.setup(echo, GPIO.IN)
-        GPIO.output(trig, False)
+        try:
+            # Create DistanceSensor with custom timeout and max distance
+            sensor = DistanceSensor(
+                echo=echo,
+                trigger=trig,
+                max_distance=SENSOR_MAX_DISTANCE,
+                threshold_distance=OBSTACLE_DIST
+            )
+            sensors[name] = sensor
+            print(f"  ✓ {name}: GPIO trigger={trig}, echo={echo}")
+        except Exception as e:
+            print(f"  ❌ Failed to initialize {name}: {e}")
     
-    print("✓ 6 Ultrasonic sensors initialized")
+    print(f"✓ {len(sensors)} ultrasonic sensors initialized (gpiozero)")
+    return sensors
 
-def distance(trig, echo):
-    """Return distance in cm from one ultrasonic pair."""
-    GPIO.output(trig, True)
-    time.sleep(0.00001)
-    GPIO.output(trig, False)
-
-    start, end = time.time(), time.time()
-    timeout = start + 0.04
-    
-    while GPIO.input(echo) == 0 and time.time() < timeout:
-        start = time.time()
-    while GPIO.input(echo) == 1 and time.time() < timeout:
-        end = time.time()
-    
-    duration = end - start
-    return (duration * 34300) / 2
-
-def get_sensor_readings(use_rear=False):
-    """Read either front or rear ultrasonic sensors."""
-    sensors = ULTRASONIC_REAR if use_rear else ULTRASONIC_FRONT
+def get_sensor_readings(sensors, use_rear=False):
+    """Read front or rear ultrasonic sensors."""
+    sensor_names = list(ULTRASONIC_REAR.keys()) if use_rear else list(ULTRASONIC_FRONT.keys())
     readings = {}
     
-    for pos, pins in sensors.items():
+    for name in sensor_names:
+        if name not in sensors:
+            readings[name] = float('inf')
+            continue
+        
         try:
-            readings[pos] = distance(*pins)
-            time.sleep(0.01)
+            # Get distance in meters
+            distance = sensors[name].distance
+            readings[name] = distance  # Keep in meters
+            time.sleep(0.01)  # Small delay between readings
         except Exception as e:
-            print(f"⚠ Error reading {pos}: {e}")
-            readings[pos] = float('inf')
+            print(f"⚠  Error reading {name}: {e}")
+            readings[name] = float('inf')
     
     return readings
 
-# ---------------- Navigation Logic ----------------
-class Navigator:
-    """Handles autonomous navigation with obstacle avoidance."""
+def cleanup_sensors(sensors):
+    """Close all sensor objects."""
+    for sensor in sensors.values():
+        try:
+            sensor.close()
+        except Exception:
+            pass
+
+# ---------------- Improved Navigation with Wall Following ----------------
+class ImprovedNavigator:
+    """Handles autonomous navigation with obstacle avoidance and wall following."""
     
-    def __init__(self, motor, odometry, tunnel_length=10.0, obstacle_dist=15.0):
+    def __init__(self, motor, odometry, sensors, target_distance=10.0, obstacle_dist=0.20):
         self.motor = motor
         self.odometry = odometry
-        self.tunnel_length = tunnel_length
+        self.sensors = sensors
+        self.target_distance = target_distance
         self.obstacle_dist = obstacle_dist
         
-        self.reverse_mode = False
-        self.manual_mode = False
-        self.running = False
+        self.manual_mode = True  # Start in manual mode
+        self.journey_log = []    # Log of movements: [('forward', duration), ('left', duration), ...]
+        self.is_returning = False
+        self.mission_complete = False
+        
+        # Hysteresis parameters (in meters)
+        self.obstacle_threshold = 0.15      # Start avoiding at 15cm
+        self.clear_threshold = 0.25         # Stop avoiding only at 25cm (buffer)
+        
+        # Sensor filtering
+        self.sensor_history = {
+            'front_left': [],
+            'front_center': [],
+            'front_right': []
+        }
+        self.history_size = 3               # Average last 3 readings
+        
+        # State machine
+        self.nav_state = 'moving'  # 'moving', 'avoiding', 'wall_following'
+        self.state_duration = 0.0
+        self.stuck_counter = 0
+        
+        # Timing
+        self.last_action_time = time.time()
+        self.min_action_interval = 0.3     # Minimum 300ms between actions
+        
+        # Conservative parameters for tight spaces
+        self.forward_duration = 0.3         # Move for longer intervals
+        self.turn_duration = 0.5            # Deliberate 45° turns
+        self.turn_angle_per_second = 90.0   # degrees/sec, so 0.5s = 45°
+        
+        # Wall following parameters
+        self.wall_follow_enabled = WALL_FOLLOW_ENABLED
+        self.wall_target_distance = WALL_TARGET_DISTANCE
+        self.wall_tolerance = WALL_TOLERANCE
+        self.following_left_wall = False  # Which wall we're following
+    
+    def set_target_distance(self, distance):
+        """Set the target distance for the mission."""
+        self.target_distance = distance
+        print(f"🎯 Target distance set to {distance:.1f} meters")
     
     def toggle_manual(self):
         """Toggle between manual and automatic control."""
+        if self.mission_complete:
+            print("⚠️  Mission complete! Reset required (press R)")
+            return
+        
         self.manual_mode = not self.manual_mode
         mode = "MANUAL" if self.manual_mode else "AUTOMATIC"
         print(f"🎮 Control mode: {mode}")
+        
         if self.manual_mode:
             self.motor.stop()
+        else:
+            # Starting automatic mode
+            self.journey_log = []
+            self.is_returning = False
+            self.nav_state = 'moving'
+            print(f"🚀 Starting autonomous journey to {self.target_distance:.1f}m")
+    
+    def reset_mission(self):
+        """Reset for a new mission."""
+        self.journey_log = []
+        self.is_returning = False
+        self.mission_complete = False
+        self.manual_mode = True
+        self.nav_state = 'moving'
+        self.odometry.set_origin()
+        print("🔄 Mission reset - ready for new journey")
     
     def check_distance_limit(self):
-        """Check if rover has reached tunnel length limit."""
+        """Check if rover has reached target distance."""
         dist = self.odometry.distance_from_start()
         
-        if not self.reverse_mode and dist >= self.tunnel_length:
-            print(f"\n🔄 REACHED TUNNEL END ({dist:.2f}m)")
-            print("Switching to REVERSE mode - using rear sensors")
-            self.reverse_mode = True
+        if not self.is_returning and dist >= self.target_distance:
+            print(f"\n🎯 TARGET REACHED ({dist:.2f}m)")
+            print("="*60)
+            print("Beginning return journey...")
+            print("="*60)
             
-            # Brief stop, then start return journey
+            self.is_returning = True
             self.motor.stop()
             time.sleep(0.5)
+            
+            # Perform 180 degree turn
+            print(f"🔄 Turning 180° (duration: {TURN_180_DURATION:.1f}s)")
+            self.motor.turn_right(TURN_180_DURATION)
+            self.odometry.update_turn_right(TURN_180_DURATION)
+            
+            time.sleep(0.5)
+            
+            # Now execute return journey
+            self.execute_return_journey()
             return True
         
         return False
     
-    def navigate_step(self):
-        """Execute one navigation step (obstacle avoidance)."""
-        if self.manual_mode:
-            return  # Don't navigate in manual mode
+    def execute_return_journey(self):
+        """Navigate back to origin by reversing the journey log."""
+        print("\n🔋 Journey Log (reversed):")
+        print("-" * 60)
         
-        # Check if we've reached the distance limit
+        # Reverse the log
+        reversed_log = []
+        for action, duration in reversed(self.journey_log):
+            if action == 'forward':
+                # Forward becomes forward (we've already turned 180°)
+                reversed_log.append(('forward', duration))
+            elif action == 'left':
+                # Left turn becomes right turn (due to 180° turn)
+                reversed_log.append(('right', duration))
+            elif action == 'right':
+                # Right turn becomes left turn (due to 180° turn)
+                reversed_log.append(('left', duration))
+        
+        # Display the plan
+        for i, (action, dur) in enumerate(reversed_log, 1):
+            print(f"  {i}. {action.upper():<8} for {dur:.2f}s")
+        
+        print("-" * 60)
+        print("Executing return journey...\n")
+        
+        # Execute each action
+        for action, duration in reversed_log:
+            if action == 'forward':
+                print(f"➡️  Moving forward {duration:.2f}s")
+                self.motor.forward(duration)
+                self.odometry.update_forward(duration)
+            elif action == 'left':
+                print(f"↪️  Turning left {duration:.2f}s")
+                self.motor.turn_left(duration)
+                self.odometry.update_turn_left(duration)
+            elif action == 'right':
+                print(f"↩️  Turning right {duration:.2f}s")
+                self.motor.turn_right(duration)
+                self.odometry.update_turn_right(duration)
+            
+            time.sleep(0.2)  # Brief pause between actions
+        
+        self.motor.stop()
+        
+        # Mission complete
+        pos = self.odometry.get_position()
+        print("\n" + "="*60)
+        print("🎉 RETURN JOURNEY COMPLETE!")
+        print("="*60)
+        print(f"Final position: ({pos['pos_x']:.2f}, {pos['pos_y']:.2f})m")
+        print(f"Distance from origin: {pos['distance_traveled']:.2f}m")
+        print(f"Final heading: {self.odometry.heading:.1f}°")
+        print("="*60)
+        
+        self.mission_complete = True
+        self.manual_mode = True
+        print("\n💡 Press R to reset for new mission")
+    
+    def add_sensor_reading(self, name, distance):
+        """Add reading to history and return filtered median."""
+        if name not in self.sensor_history:
+            self.sensor_history[name] = []
+        
+        self.sensor_history[name].append(distance)
+        
+        # Keep only last N readings
+        if len(self.sensor_history[name]) > self.history_size:
+            self.sensor_history[name].pop(0)
+        
+        # Return median (more robust than average for outliers)
+        return sorted(self.sensor_history[name])[len(self.sensor_history[name])//2]
+    
+    def get_filtered_readings(self, sensors):
+        """Get averaged sensor readings."""
+        raw_readings = get_sensor_readings(sensors, use_rear=False)
+        
+        filtered = {
+            'front_left': self.add_sensor_reading('front_left', raw_readings.get('front_left', float('inf'))),
+            'front_center': self.add_sensor_reading('front_center', raw_readings.get('front_center', float('inf'))),
+            'front_right': self.add_sensor_reading('front_right', raw_readings.get('front_right', float('inf')))
+        }
+        
+        return filtered
+    
+    def check_stuck(self, left, center, right):
+        """Detect if rover is stuck and needs aggressive action."""
+        # Stuck if all three sensors are close
+        if (left < 0.15 and center < 0.15 and right < 0.15):
+            self.stuck_counter += 1
+            
+            if self.stuck_counter > 3:  # Stuck for 3+ consecutive checks
+                print(f"⚠️  STUCK DETECTED - all sensors < 0.15m (L:{left:.2f} C:{center:.2f} R:{right:.2f})")
+                self.stuck_counter = 0
+                
+                # Back up and turn 90°
+                print("↙️ Backing up and turning...")
+                self.motor.backward(0.5)
+                self.odometry.update_backward(0.5)
+                self.journey_log.append(('backward', 0.5))
+                
+                time.sleep(0.2)
+                
+                self.motor.turn_left(0.6)  # ~54° at 90°/sec
+                self.odometry.update_turn_left(0.6)
+                self.journey_log.append(('left', 0.6))
+                
+                return True
+        else:
+            self.stuck_counter = 0
+        
+        return False
+    
+    def follow_wall(self, left, right, is_left_wall):
+        """Follow a wall by maintaining target distance."""
+        if is_left_wall:
+            wall_dist = left
+            other_dist = right
+            wall_name = "LEFT"
+        else:
+            wall_dist = right
+            other_dist = left
+            wall_name = "RIGHT"
+        
+        # Check if we're still next to the wall
+        if wall_dist > self.wall_target_distance + 0.15:  # Lost the wall
+            print(f"📍 Lost {wall_name} wall (dist: {wall_dist:.2f}m), returning to normal navigation")
+            self.nav_state = 'moving'
+            return False
+        
+        # Maintain target distance from wall
+        error = wall_dist - self.wall_target_distance
+        
+        if abs(error) < self.wall_tolerance:
+            # Within tolerance - move forward
+            print(f"🧭 Following {wall_name} wall {wall_dist:.2f}m (ideal: {self.wall_target_distance:.2f}m)")
+            self.motor.forward(self.forward_duration)
+            self.odometry.update_forward(self.forward_duration)
+            
+            if self.journey_log and self.journey_log[-1][0] == 'forward':
+                self.journey_log[-1] = ('forward', self.journey_log[-1][1] + self.forward_duration)
+            else:
+                self.journey_log.append(('forward', self.forward_duration))
+        
+        elif error > self.wall_tolerance:
+            # Too far from wall - move closer
+            if is_left_wall:
+                print(f"🧭 Too far from LEFT wall ({wall_dist:.2f}m), turning left")
+                self.motor.turn_left(0.2)
+                self.odometry.update_turn_left(0.2)
+            else:
+                print(f"🧭 Too far from RIGHT wall ({wall_dist:.2f}m), turning right")
+                self.motor.turn_right(0.2)
+                self.odometry.update_turn_right(0.2)
+        
+        else:
+            # Too close to wall - move away
+            if is_left_wall:
+                print(f"🧭 Too close to LEFT wall ({wall_dist:.2f}m), turning right")
+                self.motor.turn_right(0.2)
+                self.odometry.update_turn_right(0.2)
+            else:
+                print(f"🧭 Too close to RIGHT wall ({wall_dist:.2f}m), turning left")
+                self.motor.turn_left(0.2)
+                self.odometry.update_turn_left(0.2)
+        
+        return True
+    
+    def navigate_step_improved(self):
+        """Improved navigation with hysteresis, 45° turns, and wall following."""
+        
+        if self.manual_mode or self.is_returning:
+            return
+        
+        # Check distance limit
         if self.check_distance_limit():
             return
         
-        # Read appropriate sensors
-        readings = get_sensor_readings(use_rear=self.reverse_mode)
+        current_time = time.time()
         
-        # Extract sensor values
-        if self.reverse_mode:
-            left = readings.get('rear_left', float('inf'))
-            center = readings.get('rear_center', float('inf'))
-            right = readings.get('rear_right', float('inf'))
-        else:
-            left = readings.get('front_left', float('inf'))
-            center = readings.get('front_center', float('inf'))
-            right = readings.get('front_right', float('inf'))
+        # Rate limit navigation updates
+        if current_time - self.last_action_time < self.min_action_interval:
+            return
         
-        # Obstacle avoidance logic
-        if center < self.obstacle_dist:
-            self.motor.stop()
-            time.sleep(0.1)
+        # Get filtered sensor readings
+        readings = self.get_filtered_readings(self.sensors)
+        
+        left = readings.get('front_left', float('inf'))
+        center = readings.get('front_center', float('inf'))
+        right = readings.get('front_right', float('inf'))
+        
+        # Debug output
+        print(f"📊 Sensors - L:{left:.3f} C:{center:.3f} R:{right:.3f} | State: {self.nav_state}")
+        
+        # Check for stuck condition
+        if self.check_stuck(left, center, right):
+            self.last_action_time = current_time
+            return
+        
+        # State machine for deliberate movement
+        if self.nav_state == 'moving':
+            if center < self.obstacle_threshold:
+                # Obstacle ahead - decide direction
+                print(f"🚧 Obstacle ahead! L:{left:.2f} R:{right:.2f}")
+                self.nav_state = 'avoiding'
+                
+                # Choose turn direction (45° turns in tight space)
+                if left > right + 0.05:  # Left is significantly clearer
+                    print("↪️  Turning LEFT 45°")
+                    self.motor.turn_left(self.turn_duration)
+                    self.odometry.update_turn_left(self.turn_duration)
+                    self.journey_log.append(('left', self.turn_duration))
+                else:
+                    print("↩️  Turning RIGHT 45°")
+                    self.motor.turn_right(self.turn_duration)
+                    self.odometry.update_turn_right(self.turn_duration)
+                    self.journey_log.append(('right', self.turn_duration))
+                
+                self.state_duration = 0.0
             
-            # Decide which way to turn
-            if left > right:
-                print(f"🚧 Obstacle ahead, turning LEFT (L:{left:.1f} R:{right:.1f})")
-                duration = 0.4
-                self.motor.turn_left(duration)
-                self.odometry.update_turn_left(duration)
+            elif left < self.obstacle_threshold:
+                # Obstacle on left - enter wall following mode
+                if self.wall_follow_enabled:
+                    print(f"🚧 Left wall detected ({left:.2f}m), entering wall following mode")
+                    self.nav_state = 'wall_following'
+                    self.following_left_wall = True
+                    self.state_duration = 0.0
+                else:
+                    print("➡️  Moving right")
+                    self.motor.turn_right(0.2)
+                    self.odometry.update_turn_right(0.2)
+            
+            elif right < self.obstacle_threshold:
+                # Obstacle on right - enter wall following mode
+                if self.wall_follow_enabled:
+                    print(f"🚧 Right wall detected ({right:.2f}m), entering wall following mode")
+                    self.nav_state = 'wall_following'
+                    self.following_left_wall = False
+                    self.state_duration = 0.0
+                else:
+                    print("⬅️  Moving left")
+                    self.motor.turn_left(0.2)
+                    self.odometry.update_turn_left(0.2)
+            
             else:
-                print(f"🚧 Obstacle ahead, turning RIGHT (L:{left:.1f} R:{right:.1f})")
-                duration = 0.4
-                self.motor.turn_right(duration)
-                self.odometry.update_turn_right(duration)
+                # Clear path - move forward
+                print(f"⬆️  Moving forward")
+                self.motor.forward(self.forward_duration)
+                self.odometry.update_forward(self.forward_duration)
+                
+                # Extend last forward if applicable
+                if self.journey_log and self.journey_log[-1][0] == 'forward':
+                    self.journey_log[-1] = ('forward', self.journey_log[-1][1] + self.forward_duration)
+                else:
+                    self.journey_log.append(('forward', self.forward_duration))
         
-        elif left < self.obstacle_dist:
-            print(f"🚧 Obstacle on left ({left:.1f}cm), adjusting RIGHT")
-            self.motor.set_speed(60)
-            duration = 0.2
-            self.motor.turn_right(duration)
-            self.odometry.update_turn_right(duration)
-            self.motor.set_speed(75)
+        elif self.nav_state == 'wall_following':
+            # Follow the detected wall
+            if not self.follow_wall(left, right, self.following_left_wall):
+                # Lost the wall - return to normal navigation
+                self.nav_state = 'moving'
         
-        elif right < self.obstacle_dist:
-            print(f"🚧 Obstacle on right ({right:.1f}cm), adjusting LEFT")
-            self.motor.set_speed(60)
-            duration = 0.2
-            self.motor.turn_left(duration)
-            self.odometry.update_turn_left(duration)
-            self.motor.set_speed(75)
+        elif self.nav_state == 'avoiding':
+            # After an avoidance move, check if path is clear
+            self.state_duration += self.min_action_interval
+            
+            # Return to moving if we're clear (with hysteresis buffer)
+            if (center > self.clear_threshold and 
+                left > self.clear_threshold and 
+                right > self.clear_threshold):
+                print("✅ Path cleared, resuming forward")
+                self.nav_state = 'moving'
+                self.state_duration = 0.0
+            elif self.state_duration > 1.5:
+                # Stuck in avoidance - try another turn
+                print("⚠️  Stuck in avoidance, turning 45° again")
+                if left > right:
+                    self.motor.turn_left(self.turn_duration)
+                    self.odometry.update_turn_left(self.turn_duration)
+                    self.journey_log.append(('left', self.turn_duration))
+                else:
+                    self.motor.turn_right(self.turn_duration)
+                    self.odometry.update_turn_right(self.turn_duration)
+                    self.journey_log.append(('right', self.turn_duration))
+                
+                self.state_duration = 0.0
         
-        else:
-            # No obstacles - move in current direction
-            if self.reverse_mode:
-                # Moving backward toward start
-                self.motor.backward()
-            else:
-                # Moving forward into tunnel
-                self.motor.forward()
+        self.last_action_time = current_time
+
+# Navigation class (for compatibility if needed)
+class Navigator(ImprovedNavigator):
+    """Alias for backward compatibility."""
+    pass
 
 # ---------------- Keyboard Input Handler ----------------
 class KeyboardInput:
@@ -358,10 +679,38 @@ class KeyboardInput:
 # ---------------- Main Async Loop ----------------
 async def main():
     """Main control loop."""
+    global TARGET_DISTANCE
+    
+    # Ask for target distance
+    print("\n" + "="*60)
+    print("🤖 DATABOT ROVER - AUTONOMOUS NAVIGATION")
+    print("   Using gpiozero for GPIO control")
+    print("   Enhanced with wall following")
+    print("="*60)
+    
+    while True:
+        try:
+            distance_input = input("\nEnter target distance (meters) [default: 5.0]: ").strip()
+            if distance_input == "":
+                TARGET_DISTANCE = 5.0
+            else:
+                TARGET_DISTANCE = float(distance_input)
+            
+            if TARGET_DISTANCE <= 0:
+                print("❌ Distance must be positive")
+                continue
+            break
+        except ValueError:
+            print("❌ Invalid input. Please enter a number.")
+    
+    print(f"\n✓ Target distance set to {TARGET_DISTANCE:.1f} meters")
+    
     # Initialize components
-    motor = MotorController()
+    print("\nInitializing hardware...")
+    motor = MotorController(default_speed=1.0)
     odometry = Odometry(WHEEL_SPEED, TURN_RATE)
-    navigator = Navigator(motor, odometry, TUNNEL_LENGTH, OBSTACLE_DIST)
+    sensors = setup_ultrasonic()
+    navigator = ImprovedNavigator(motor, odometry, sensors, TARGET_DISTANCE, OBSTACLE_DIST)
     logger = SQLiteDataLogger(DB_FILE, BUFFER_SIZE)
     keyboard = KeyboardInput()
     
@@ -380,17 +729,14 @@ async def main():
     central.on_receive(handle_databot_rx)
     
     print("\n" + "="*60)
-    print("🤖 DATABOT ROVER - AUTONOMOUS NAVIGATION")
-    print("="*60)
     print("Controls:")
     print("  P - Set current position as origin")
     print("  C - Toggle Manual/Automatic mode")
+    print("  R - Reset mission (after completion)")
     print("  W/↑ - Forward    S/↓ - Backward")
     print("  A/← - Left       D/→ - Right")
     print("  SPACE - Stop     Q - Quit")
     print("="*60 + "\n")
-    
-    setup_ultrasonic()
     
     # Connect to databot with retry
     print("Connecting to databot...")
@@ -419,9 +765,11 @@ async def main():
         print("⚠️  Continuing without databot (position tracking only)")
         print("")
     
+    # Set origin
+    odometry.set_origin()
+    
     # Timing
     last_flush = time.time()
-    last_nav = time.time()
     last_status = time.time()
     
     try:
@@ -438,6 +786,8 @@ async def main():
                     odometry.set_origin()
                 elif key.lower() == 'c':
                     navigator.toggle_manual()
+                elif key.lower() == 'r':
+                    navigator.reset_mission()
                 elif navigator.manual_mode:
                     # Manual control
                     if key in ['w', '\x1b[A']:  # W or Up arrow
@@ -460,15 +810,9 @@ async def main():
                         motor.stop()
                         print("⏸️ Stop")
             
-            # Navigation (if in automatic mode)
-            if not navigator.manual_mode and current_time - last_nav > 0.1:
-                navigator.navigate_step()
-                
-                # Update odometry based on movement
-                if motor._is_moving:
-                    odometry.update_forward(0.1)
-                
-                last_nav = current_time
+            # Navigation (improved version)
+            if not navigator.manual_mode and not navigator.is_returning:
+                navigator.navigate_step_improved()
             
             # Process databot sensor data
             try:
@@ -488,12 +832,12 @@ async def main():
                     last_flush = current_time
             
             # Status updates
-            if current_time - last_status > 5.0:
+            if current_time - last_status > 5.0 and not navigator.is_returning:
                 pos = odometry.get_position()
-                mode = "REVERSE" if navigator.reverse_mode else "FORWARD"
                 control = "MANUAL" if navigator.manual_mode else "AUTO"
-                print(f"📊 [{control}/{mode}] Pos: ({pos['pos_x']:.2f}, {pos['pos_y']:.2f}) "
-                      f"Heading: {odometry.heading:.1f}° Distance: {pos['distance_traveled']:.2f}m")
+                status = "COMPLETE" if navigator.mission_complete else "ACTIVE"
+                print(f"📍 [{control}/{status}] Pos: ({pos['pos_x']:.2f}, {pos['pos_y']:.2f}) "
+                      f"Heading: {odometry.heading:.1f}° Distance: {pos['distance_traveled']:.2f}m / {TARGET_DISTANCE:.1f}m")
                 last_status = current_time
             
             await asyncio.sleep(0.05)
@@ -502,19 +846,19 @@ async def main():
         print("\n\n⚠️ Interrupted!")
     finally:
         # Cleanup
-        motor.stop()
+        print("\nCleaning up...")
+        motor.cleanup()
+        cleanup_sensors(sensors)
         logger.flush()
         keyboard.cleanup()
-        GPIO.cleanup()
         
         if central.is_connected:
             await central.disconnect()
         
-        print("\n✓ Shutdown complete")
+        print("✓ Shutdown complete")
 
 # ---------------- Entry Point ----------------
 if __name__ == "__main__":
-    import math
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
