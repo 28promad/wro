@@ -417,14 +417,14 @@ class Navigator:
                 self.odometry.update_turn_right(duration)
                 self.journey_log.append(('right', duration))
         
-        elif left < self.obstacle_dist:
-            print(f"🚧 Obstacle on left ({left:.2f}m), adjusting RIGHT")
-            self.motor.set_speed(0.6)  # 60%
-            duration = 0.4
-            self.motor.turn_right(duration)
-            self.odometry.update_turn_right(duration)
-            self.motor.set_speed(0.75)  # Back to 75%
-            self.journey_log.append(('right', duration))
+        # elif left < self.obstacle_dist:
+        #     print(f"🚧 Obstacle on left ({left:.2f}m), adjusting RIGHT")
+        #     self.motor.set_speed(0.6)  # 60%
+        #     duration = 0.4
+        #     self.motor.turn_right(duration)
+        #     self.odometry.update_turn_right(duration)
+        #     self.motor.set_speed(0.75)  # Back to 75%
+        #     self.journey_log.append(('right', duration))
         
         elif right < self.obstacle_dist:
             print(f"🚧 Obstacle on right ({right:.2f}m), adjusting LEFT")
