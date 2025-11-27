@@ -496,7 +496,7 @@ async def main():
     
     # Initialize components
     print("\nInitializing hardware...")
-    motor = MotorController(default_speed=0.75)
+    motor = MotorController(default_speed=1.0)
     odometry = Odometry(WHEEL_SPEED, TURN_RATE)
     sensors = setup_ultrasonic()
     navigator = Navigator(motor, odometry, sensors, TARGET_DISTANCE, OBSTACLE_DIST)
